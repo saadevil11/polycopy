@@ -18,6 +18,7 @@ from src.core.trade_replicator import TradeReplicator
 from src.core.risk_manager import RiskManager
 from src.core.database import Database
 from src.core.merge_positions import PositionMerger
+from src.core.auto_redeem import AutoRedeemer
 
 
 class PolymarketCopyTradingBot:
@@ -36,6 +37,7 @@ class PolymarketCopyTradingBot:
         self.risk_manager = RiskManager(self.polymarket_client)
         self.trade_replicator = TradeReplicator(self.polymarket_client, self.risk_manager)
         self.position_merger = PositionMerger(self.polymarket_client)
+        self.auto_redeemer = None  # Initialize later after client is ready
         
         # Use WebSocket monitoring for real-time trade detection
         self.trader_monitor = WebSocketTraderMonitor()
@@ -59,6 +61,20 @@ class PolymarketCopyTradingBot:
             if not self.polymarket_client.initialize():
                 logger.error("Failed to initialize Polymarket client")
                 return False
+            
+            # Initialize auto-redeemer if enabled
+            if self.config.auto_redeem_enabled:
+                try:
+                    self.auto_redeemer = AutoRedeemer(self.polymarket_client)
+                    logger.info("✅ Auto-redemption enabled (checks every {} minutes)".format(
+                        self.config.auto_redeem_interval_minutes
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to initialize auto-redeemer: {e}")
+                    logger.warning("Auto-redemption will be disabled")
+                    self.auto_redeemer = None
+            else:
+                logger.info("Auto-redemption disabled")
             
             # Set up trader monitor callbacks
             self.trader_monitor.add_new_trade_callback(self._on_new_trade)
@@ -110,6 +126,13 @@ class PolymarketCopyTradingBot:
         
         # Start risk monitoring task
         asyncio.create_task(self._risk_monitoring_loop())
+        
+        # Start auto-redemption task if enabled
+        if self.auto_redeemer:
+            asyncio.create_task(self.auto_redeemer.start_auto_redeem_loop(
+                check_interval_minutes=self.config.auto_redeem_interval_minutes
+            ))
+            logger.info(f"🎁 Auto-redemption task started (checks every {self.config.auto_redeem_interval_minutes} min)")
         
         # Note: Position merging is now only triggered by target trader actions
         

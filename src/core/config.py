@@ -80,6 +80,8 @@ class BotConfig:
     # Position Management
     copy_merge_actions: bool = True  # Copy merge actions from target trader
     copy_redeem_actions: bool = True  # Copy redeem actions from target trader
+    auto_redeem_enabled: bool = True  # Automatically redeem winnings from resolved markets
+    auto_redeem_interval_minutes: int = 60  # How often to check for redeemable positions
 
 # Global configuration instances
 trading_config = TradingConfig(
@@ -100,5 +102,7 @@ bot_config = BotConfig(
     log_level=os.getenv("LOG_LEVEL", "INFO"),
     dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
     copy_merge_actions=os.getenv("COPY_MERGE_ACTIONS", "true").lower() == "true",
-    copy_redeem_actions=os.getenv("COPY_REDEEM_ACTIONS", "true").lower() == "true"
+    copy_redeem_actions=os.getenv("COPY_REDEEM_ACTIONS", "true").lower() == "true",
+    auto_redeem_enabled=os.getenv("AUTO_REDEEM_ENABLED", "true").lower() == "true",
+    auto_redeem_interval_minutes=int(os.getenv("AUTO_REDEEM_INTERVAL_MINUTES", "60"))
 )
