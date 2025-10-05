@@ -139,6 +139,7 @@ python tools/dashboard.py
 
 - [Quick Start Guide](docs/QUICKSTART.md)
 - [Wallet Setup Guide](docs/WALLET_SETUP_GUIDE.md)
+- [Railway Deployment Guide](docs/RAILWAY_DEPLOYMENT_GUIDE.md) ⭐ Recommended
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT_GUIDE.md)
 - [Project Overview](docs/PROJECT_OVERVIEW.md)
 
@@ -190,16 +191,29 @@ DRY_RUN=true
 - Ensure USDC is on Polygon network
 - Polymarket handles gas fees automatically
 
-## 🚀 AWS Deployment
+## ☁️ Cloud Deployment
 
-Deploy to AWS EC2 for 24/7 operation:
+### Railway (Recommended - Easiest)
+
+Deploy in 5 minutes with auto-deploy from GitHub:
+
+```bash
+# See detailed guide
+cat docs/RAILWAY_DEPLOYMENT_GUIDE.md
+```
+
+**Cost**: ~$5-10/month | **Setup**: 5 minutes | **Difficulty**: ⭐
+
+### AWS EC2 (Advanced)
+
+Deploy to AWS EC2 for full control:
 
 ```bash
 # See detailed guide
 cat docs/AWS_DEPLOYMENT_GUIDE.md
 ```
 
-**Cost**: ~$8-20/month (after free tier)
+**Cost**: ~$8-20/month | **Setup**: 30 minutes | **Difficulty**: ⭐⭐⭐
 
 ## 📊 Performance Monitoring
 
