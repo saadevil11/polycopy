@@ -16,25 +16,24 @@ if __name__ == "__main__":
     print("🤖 Polymarket Copy Trading Bot")
     print("=" * 50)
     
-    # Check if .env file exists
+    # Load .env file if it exists (for local development)
+    # Railway/cloud deployments use environment variables directly
     env_file = Path(".env")
-    if not env_file.exists():
-        print("❌ .env file not found!")
-        print("📝 Please copy env.example to .env and configure it:")
-        print("   cp env.example .env")
-        print("   nano .env")
-        sys.exit(1)
+    if env_file.exists():
+        from dotenv import load_dotenv
+        load_dotenv()
+        print("✅ Loaded configuration from .env file")
+    else:
+        print("ℹ️  Using environment variables (cloud deployment)")
     
     # Check if required environment variables are set
-    from dotenv import load_dotenv
-    load_dotenv()
-    
     required_vars = ["PRIVATE_KEY", "FUNDER_ADDRESS", "TARGET_TRADER_ADDRESS"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     
     if missing_vars:
         print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
-        print("📝 Please configure these in your .env file")
+        print("📝 Please set these in Railway dashboard → Variables tab")
+        print(f"   Missing: {', '.join(missing_vars)}")
         sys.exit(1)
     
     print("✅ Configuration validated")
