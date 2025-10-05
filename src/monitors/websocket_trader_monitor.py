@@ -31,6 +31,9 @@ class WebSocketTraderMonitor:
         # WebSocket connection
         self.websocket = None
         self.ws_url = "wss://ws-live-data.polymarket.com"
+        self.last_message_time = datetime.now()
+        self.connection_count = 0
+        self.is_connected = False
         
     def add_new_trade_callback(self, callback):
         """Add callback for new trades"""
@@ -52,22 +55,38 @@ class WebSocketTraderMonitor:
             asyncio.create_task(self.websocket.close())
     
     async def _websocket_loop(self):
-        """Main WebSocket loop"""
+        """Main WebSocket loop with health monitoring"""
         while self.monitoring:
             try:
                 await self._connect_websocket()
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"WebSocket connection closed: {e}")
+                self.is_connected = False
+                logger.info("Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"WebSocket error: {e}")
-                await asyncio.sleep(10)  # Wait before reconnecting
+                self.is_connected = False
+                logger.info("Reconnecting in 10 seconds...")
+                await asyncio.sleep(10)
     
     async def _connect_websocket(self):
         """Connect to WebSocket and listen for trades"""
         try:
-            logger.info("Connecting to Polymarket WebSocket...")
+            self.connection_count += 1
+            logger.info(f"Connecting to Polymarket WebSocket... (attempt #{self.connection_count})")
             
-            async with websockets.connect(self.ws_url) as websocket:
+            # Add ping_interval and ping_timeout for better connection health
+            async with websockets.connect(
+                self.ws_url,
+                ping_interval=20,  # Send ping every 20 seconds
+                ping_timeout=10,   # Wait 10 seconds for pong
+                close_timeout=5
+            ) as websocket:
                 self.websocket = websocket
-                logger.success("WebSocket connected")
+                self.is_connected = True
+                self.last_message_time = datetime.now()
+                logger.success(f"✅ WebSocket connected (connection #{self.connection_count})")
                 
                 # Subscribe to activity/trades
                 subscribe_message = {
@@ -81,18 +100,48 @@ class WebSocketTraderMonitor:
                 }
                 
                 await websocket.send(json.dumps(subscribe_message))
-                logger.info("Subscribed to activity/trades")
+                logger.info("📡 Subscribed to activity/trades")
                 
-                # Listen for messages
-                async for message in websocket:
-                    try:
-                        await self._handle_websocket_message(message)
-                    except Exception as e:
-                        logger.error(f"Error handling WebSocket message: {e}")
+                # Start health check task
+                health_check_task = asyncio.create_task(self._health_check())
+                
+                try:
+                    # Listen for messages
+                    async for message in websocket:
+                        try:
+                            self.last_message_time = datetime.now()
+                            await self._handle_websocket_message(message)
+                        except Exception as e:
+                            logger.error(f"Error handling WebSocket message: {e}")
+                finally:
+                    health_check_task.cancel()
                         
         except Exception as e:
+            self.is_connected = False
             logger.error(f"WebSocket connection error: {e}")
             raise
+    
+    async def _health_check(self):
+        """Monitor WebSocket connection health"""
+        while self.is_connected:
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                time_since_last_message = (datetime.now() - self.last_message_time).total_seconds()
+                
+                if time_since_last_message > 60:
+                    logger.warning(f"⚠️  No messages received for {time_since_last_message:.0f} seconds")
+                    logger.info("WebSocket may be stale, will reconnect...")
+                    if self.websocket:
+                        await self.websocket.close()
+                    break
+                else:
+                    logger.debug(f"✅ WebSocket healthy (last message {time_since_last_message:.0f}s ago)")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Health check error: {e}")
     
     async def _handle_websocket_message(self, message: str):
         """Handle incoming WebSocket message"""
@@ -293,26 +342,18 @@ class WebSocketTraderMonitor:
     
     def get_monitoring_status(self) -> dict:
         """Get monitoring status"""
-        # Check WebSocket connection status safely
-        is_connected = False
-        if self.websocket is not None:
-            try:
-                is_connected = self.websocket.open
-            except:
-                try:
-                    # Fallback check
-                    is_connected = self.websocket.state == 1  # CONNECTED state
-                except:
-                    is_connected = False
+        time_since_last_message = (datetime.now() - self.last_message_time).total_seconds()
         
         return {
             'monitoring': self.monitoring,
+            'connected': self.is_connected,
+            'connection_count': self.connection_count,
+            'time_since_last_message': time_since_last_message,
             'target_address': self.target_address,
             'last_check_time': self.last_check_time.isoformat(),
             'seen_trades_count': len(self.seen_trade_ids),
             'monitoring_interval': 'real-time',
             'method': 'websocket',
-            'connected': is_connected,
             'active_filters': self.market_filter.get_enabled_patterns(),
             'filtering_enabled': bool(self.market_filter.get_enabled_patterns())
         }
