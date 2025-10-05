@@ -1,8 +1,12 @@
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip"]
+nixPkgs = ["python311"]
 
 [phases.install]
-cmds = ["python -m pip install --break-system-packages -r requirements.txt"]
+cmds = [
+  "python -m ensurepip --default-pip || true",
+  "python -m pip install --upgrade pip --break-system-packages || curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py --break-system-packages",
+  "python -m pip install --break-system-packages -r requirements.txt"
+]
 
 [start]
 cmd = "python start_bot.py"
