@@ -96,6 +96,22 @@ class TradeReplicator:
     def _calculate_position_size(self, trade: TraderTrade) -> tuple[float, float]:
         """Calculate the position size to copy"""
         try:
+            # For SELL orders, we need to sell the same PERCENTAGE of shares
+            # that the target trader sold, not recalculate based on USD
+            if trade.side == TradeSide.SELL:
+                # Calculate what percentage of their position they're selling
+                # If they're selling everything, we sell everything
+                # If they're selling 50%, we sell 50%
+                
+                # For now, use the same share ratio approach
+                # This means if target sells 1.8 shares, we sell (1.8 * copy_percentage) shares
+                copy_size = trade.size * self.config.copy_percentage
+                copy_amount = copy_size * trade.price if trade.price > 0 else copy_size
+                
+                logger.info(f"[SELL] Calculated position size: {copy_size} shares (same % as target), ${copy_amount:.2f}")
+                return copy_size, copy_amount
+            
+            # For BUY orders, use USD-based calculation
             # Base amount from original trade
             base_amount = trade.amount_usd * self.config.copy_percentage
             
@@ -114,7 +130,7 @@ class TradeReplicator:
                 # If price is 0 or invalid, use size ratio
                 copy_size = trade.size * self.config.copy_percentage
             
-            logger.info(f"Calculated position size: {copy_size} shares, ${copy_amount:.2f}")
+            logger.info(f"[BUY] Calculated position size: {copy_size} shares, ${copy_amount:.2f}")
             return copy_size, copy_amount
             
         except Exception as e:
