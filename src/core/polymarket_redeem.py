@@ -159,6 +159,16 @@ class PolymarketRedeemer:
                 )
             """)
             
+            # 🧹 CLEANUP: Remove incorrectly marked claims (no real tx_hash)
+            cursor.execute("""
+                DELETE FROM claimed_markets 
+                WHERE tx_hash = 'manually_claimed' OR tx_hash = '' OR tx_hash IS NULL
+            """)
+            deleted = cursor.rowcount
+            
+            if deleted > 0:
+                logger.info(f"🧹 Cleaned up {deleted} incorrectly marked claimed markets")
+            
             conn.commit()
             conn.close()
             logger.debug("✅ Claimed markets table initialized")
