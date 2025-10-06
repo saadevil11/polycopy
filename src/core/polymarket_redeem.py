@@ -30,6 +30,39 @@ class PolymarketRedeemer:
     # Polymarket Neg Risk Adapter (for some markets)
     NEG_RISK_ADAPTER_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
     
+    # Gnosis Safe contracts
+    GNOSIS_SAFE_PROXY_FACTORY = "0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2"  # Gnosis Safe Proxy Factory
+    GNOSIS_SAFE_MASTER_COPY = "0x3E5c63644E683549055b9Be8653de26E0B4CD36E"  # Gnosis Safe L2 1.3.0
+    
+    # Gnosis Safe ABI - execTransaction function
+    GNOSIS_SAFE_ABI = [
+        {
+            "inputs": [
+                {"name": "to", "type": "address"},
+                {"name": "value", "type": "uint256"},
+                {"name": "data", "type": "bytes"},
+                {"name": "operation", "type": "uint8"},
+                {"name": "safeTxGas", "type": "uint256"},
+                {"name": "baseGas", "type": "uint256"},
+                {"name": "gasPrice", "type": "uint256"},
+                {"name": "gasToken", "type": "address"},
+                {"name": "refundReceiver", "type": "address"},
+                {"name": "signatures", "type": "bytes"}
+            ],
+            "name": "execTransaction",
+            "outputs": [{"name": "success", "type": "bool"}],
+            "stateMutability": "payable",
+            "type": "function"
+        },
+        {
+            "inputs": [],
+            "name": "nonce",
+            "outputs": [{"name": "", "type": "uint256"}],
+            "stateMutability": "view",
+            "type": "function"
+        }
+    ]
+    
     # CTF Exchange ABI for claiming - CORRECTED with proper signature
     CTF_EXCHANGE_ABI = [
         {
@@ -242,14 +275,17 @@ class PolymarketRedeemer:
                 try:
                     result = await self._claim_market_winnings(market)
                     if result['success']:
-                        total_claimed += result.get('amount', 0)
                         markets_claimed += 1
-                        logger.success(f"✅ Claimed ${result.get('amount', 0):.2f} from {market['title']}")
+                        tx_hash = result.get('tx_hash', '')
+                        logger.success(f"✅ Successfully claimed winnings from: {market['title']}")
+                        logger.success(f"   TX: https://polygonscan.com/tx/{tx_hash}")
+                        logger.info(f"   💰 Check your Polymarket balance to see the amount!")
                 except Exception as e:
                     logger.error(f"Error claiming market {market.get('condition_id')}: {e}")
             
             if markets_claimed > 0:
-                logger.success(f"🎉 Successfully claimed ${total_claimed:.2f} from {markets_claimed} markets!")
+                logger.success(f"🎉 Successfully claimed winnings from {markets_claimed} market(s)!")
+                logger.info(f"💰 Your Polymarket balance has been updated!")
             
             return {
                 'total_claimed': total_claimed,
@@ -341,6 +377,44 @@ class PolymarketRedeemer:
         except Exception:
             return False
     
+    async def _get_claimed_amount(self, tx_hash: str) -> float:
+        """Get the actual amount claimed from transaction logs"""
+        try:
+            # Get transaction receipt
+            receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+            
+            # USDC Transfer event signature
+            transfer_topic = self.w3.keccak(text="Transfer(address,address,address)").hex()
+            
+            # Look for USDC transfers to the user
+            for log in receipt['logs']:
+                if log['address'].lower() == self.USDC_ADDRESS.lower():
+                    # This is a USDC transfer
+                    if len(log['topics']) >= 3:
+                        # topics[2] is the 'to' address
+                        to_address = '0x' + log['topics'][2].hex()[-40:]
+                        
+                        # Check if transfer is TO our wallet (claiming winnings)
+                        private_key = self.client.config.private_key
+                        if private_key.startswith('0x'):
+                            private_key = private_key[2:]
+                        account = self.w3.eth.account.from_key(private_key)
+                        
+                        if to_address.lower() == account.address.lower():
+                            # Parse the amount (USDC has 6 decimals)
+                            amount_raw = int(log['data'].hex(), 16)
+                            amount = amount_raw / 1e6
+                            logger.debug(f"Found USDC transfer: {amount} USDC")
+                            return amount
+            
+            # If no transfer found, try to estimate from balance change
+            logger.debug("No USDC transfer found in logs, returning 0")
+            return 0.0
+            
+        except Exception as e:
+            logger.debug(f"Error getting claimed amount: {e}")
+            return 0.0
+    
     def _has_claimable_tokens(self, condition_id: str) -> bool:
         """Check if user actually has tokens to claim for this market"""
         try:
@@ -395,19 +469,17 @@ class PolymarketRedeemer:
             
             logger.info(f"Claiming winnings from: {market['title']}")
             
-            # Method 1: Try simple CTF Exchange redeem
-            success, tx_hash = await self._claim_via_ctf_exchange(condition_id)
-            
-            if not success:
-                # Method 2: Try direct ConditionalTokens redeem
-                success, tx_hash = await self._claim_via_conditional_tokens(condition_id)
+            # Use Gnosis Safe proxy to claim (required for Polymarket proxies)
+            success, tx_hash = await self._claim_via_gnosis_safe(condition_id)
             
             if success:
                 # ✅ Mark as claimed in database (persists across restarts)
                 self._mark_market_claimed(condition_id, market['title'], tx_hash)
+                
                 return {
                     'success': True,
-                    'amount': 0  # Would need to parse logs for exact amount
+                    'amount': 0,  # Amount is in the blockchain transaction
+                    'tx_hash': tx_hash
                 }
             
             return {'success': False}
@@ -416,122 +488,89 @@ class PolymarketRedeemer:
             logger.error(f"Error claiming winnings: {e}")
             return {'success': False}
     
-    async def _claim_via_ctf_exchange(self, condition_id: str) -> Tuple[bool, str]:
-        """Claim using CTF Exchange contract. Returns (success, tx_hash)"""
+    async def _claim_via_gnosis_safe(self, condition_id: str) -> Tuple[bool, str]:
+        """Claim through Gnosis Safe proxy. Returns (success, tx_hash)"""
         try:
-            logger.info(f"🔄 Attempting CTF Exchange claim for condition: {condition_id[:10]}...")
+            logger.info(f"🔄 Attempting claim via Gnosis Safe proxy for condition: {condition_id[:10]}...")
             
-            # Get the REAL wallet address from private key (not proxy)
+            # Get proxy address (Gnosis Safe)
+            proxy_address = Web3.to_checksum_address(self.client.config.funder_address)
+            
+            # Get private key
             private_key = self.client.config.private_key
             if private_key.startswith('0x'):
                 private_key = private_key[2:]
             
-            # Derive the actual wallet address from private key
+            # Derive signer address
             account = self.w3.eth.account.from_key(private_key)
-            real_wallet_address = account.address
+            signer_address = account.address
             
-            logger.debug(f"Proxy address (Polymarket): {self.client.config.funder_address}")
-            logger.debug(f"Real wallet address (Polygon): {real_wallet_address}")
+            logger.info(f"Gnosis Safe proxy: {proxy_address}")
+            logger.info(f"Signer (owner): {signer_address}")
             
+            # Prepare the redeemPositions call data
             condition_id_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id)
-            
-            # Index sets for both outcomes (YES and NO)
-            index_sets = [1, 2]  # Binary markets have 2 outcomes
-            
-            logger.debug(f"Claiming with indexSets: {index_sets}")
-            
-            # Build transaction using REAL wallet address
-            tx_data = self.ctf_exchange.functions.redeemPositions(
-                condition_id_bytes,
-                index_sets
-            ).build_transaction({
-                'from': real_wallet_address,  # Use REAL address for blockchain tx
-                'gas': 300000,
-                'gasPrice': self.w3.eth.gas_price,
-                'nonce': self.w3.eth.get_transaction_count(real_wallet_address)
-            })
-            
-            logger.info("Transaction built, signing...")
-            
-            signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
-            # Handle both old and new Web3.py versions
-            raw_tx = signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
-            tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
-            
-            logger.info(f"✅ Claim transaction sent via CTF Exchange: {tx_hash.hex()}")
-            logger.info("Waiting for confirmation (up to 2 minutes)...")
-            
-            # Wait for confirmation
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-            
-            if receipt['status'] == 1:
-                logger.success(f"🎉 Claim successful! TX: https://polygonscan.com/tx/{tx_hash.hex()}")
-                return True, tx_hash.hex()
-            else:
-                logger.error(f"❌ Transaction failed. Receipt: {receipt}")
-            
-            return False, ""
-            
-        except Exception as e:
-            logger.error(f"❌ CTF Exchange claim failed: {type(e).__name__}: {e}")
-            import traceback
-            logger.debug(f"Traceback: {traceback.format_exc()}")
-            return False, ""
-    
-    async def _claim_via_conditional_tokens(self, condition_id: str) -> Tuple[bool, str]:
-        """Claim using ConditionalTokens contract directly. Returns (success, tx_hash)"""
-        try:
-            logger.info(f"🔄 Attempting ConditionalTokens claim for condition: {condition_id[:10]}...")
-            
-            # Get the REAL wallet address from private key (not proxy)
-            private_key = self.client.config.private_key
-            if private_key.startswith('0x'):
-                private_key = private_key[2:]
-            
-            # Derive the actual wallet address from private key
-            account = self.w3.eth.account.from_key(private_key)
-            real_wallet_address = account.address
-            
-            logger.debug(f"Using real wallet address: {real_wallet_address}")
-            
-            condition_id_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id)
-            
-            # For Polymarket, parentCollectionId is usually 0
             parent_collection_id = bytes(32)
+            index_sets = [1, 2]
             
-            # Index sets for both outcomes
-            index_sets = [1, 2]  # Binary markets have 2 outcomes
+            # Encode the function call
+            redeem_call_data = self.conditional_tokens.encodeABI(
+                fn_name='redeemPositions',
+                args=[
+                    Web3.to_checksum_address(self.USDC_ADDRESS),
+                    parent_collection_id,
+                    condition_id_bytes,
+                    index_sets
+                ]
+            )
             
-            logger.debug(f"Using USDC: {self.USDC_ADDRESS}, indexSets: {index_sets}")
+            logger.debug(f"Encoded redeem call data: {redeem_call_data[:66]}...")
             
-            # Build transaction using REAL wallet address
-            tx_data = self.conditional_tokens.functions.redeemPositions(
-                Web3.to_checksum_address(self.USDC_ADDRESS),
-                parent_collection_id,
-                condition_id_bytes,
-                index_sets
+            # Get Safe contract
+            safe_contract = self.w3.eth.contract(
+                address=proxy_address,
+                abi=self.GNOSIS_SAFE_ABI
+            )
+            
+            # Get nonce
+            safe_nonce = safe_contract.functions.nonce().call()
+            
+            logger.debug(f"Safe nonce: {safe_nonce}")
+            
+            # Build Safe transaction
+            safe_tx_data = safe_contract.functions.execTransaction(
+                Web3.to_checksum_address(self.CONDITIONAL_TOKENS_ADDRESS),  # to
+                0,  # value
+                bytes.fromhex(redeem_call_data[2:]),  # data
+                0,  # operation (0 = CALL)
+                0,  # safeTxGas
+                0,  # baseGas
+                0,  # gasPrice
+                "0x0000000000000000000000000000000000000000",  # gasToken
+                "0x0000000000000000000000000000000000000000",  # refundReceiver
+                b""  # signatures (will add after signing)
             ).build_transaction({
-                'from': real_wallet_address,  # Use REAL address for blockchain tx
-                'gas': 300000,
+                'from': signer_address,
+                'gas': 500000,
                 'gasPrice': self.w3.eth.gas_price,
-                'nonce': self.w3.eth.get_transaction_count(real_wallet_address)
+                'nonce': self.w3.eth.get_transaction_count(signer_address)
             })
             
-            logger.info("Transaction built, signing...")
+            logger.info("Signing Safe transaction...")
             
-            signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
-            # Handle both old and new Web3.py versions
+            # Sign and send
+            signed_tx = self.w3.eth.account.sign_transaction(safe_tx_data, private_key)
             raw_tx = signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
             tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
             
-            logger.info(f"✅ Claim transaction sent via ConditionalTokens: {tx_hash.hex()}")
+            logger.info(f"✅ Safe transaction sent: {tx_hash.hex()}")
             logger.info("Waiting for confirmation (up to 2 minutes)...")
             
             # Wait for confirmation
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             
             if receipt['status'] == 1:
-                logger.success(f"🎉 Claim successful! TX: https://polygonscan.com/tx/{tx_hash.hex()}")
+                logger.success(f"🎉 Claim successful via Gnosis Safe! TX: https://polygonscan.com/tx/{tx_hash.hex()}")
                 return True, tx_hash.hex()
             else:
                 logger.error(f"❌ Transaction failed. Receipt: {receipt}")
@@ -539,7 +578,7 @@ class PolymarketRedeemer:
             return False, ""
             
         except Exception as e:
-            logger.error(f"❌ ConditionalTokens claim failed: {type(e).__name__}: {e}")
+            logger.error(f"❌ Gnosis Safe claim failed: {type(e).__name__}: {e}")
             import traceback
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False, ""
