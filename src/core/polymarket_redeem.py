@@ -420,33 +420,38 @@ class PolymarketRedeemer:
         """Claim using CTF Exchange contract. Returns (success, tx_hash)"""
         try:
             logger.info(f"🔄 Attempting CTF Exchange claim for condition: {condition_id[:10]}...")
-            funder_address = Web3.to_checksum_address(self.client.config.funder_address)
-            condition_id_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id)
             
-            logger.debug(f"Funder address: {funder_address}")
+            # Get the REAL wallet address from private key (not proxy)
+            private_key = self.client.config.private_key
+            if private_key.startswith('0x'):
+                private_key = private_key[2:]
+            
+            # Derive the actual wallet address from private key
+            account = self.w3.eth.account.from_key(private_key)
+            real_wallet_address = account.address
+            
+            logger.debug(f"Proxy address (Polymarket): {self.client.config.funder_address}")
+            logger.debug(f"Real wallet address (Polygon): {real_wallet_address}")
+            
+            condition_id_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id)
             
             # Index sets for both outcomes (YES and NO)
             index_sets = [1, 2]  # Binary markets have 2 outcomes
             
             logger.debug(f"Claiming with indexSets: {index_sets}")
             
-            # Build transaction
+            # Build transaction using REAL wallet address
             tx_data = self.ctf_exchange.functions.redeemPositions(
                 condition_id_bytes,
                 index_sets
             ).build_transaction({
-                'from': funder_address,
+                'from': real_wallet_address,  # Use REAL address for blockchain tx
                 'gas': 300000,
                 'gasPrice': self.w3.eth.gas_price,
-                'nonce': self.w3.eth.get_transaction_count(funder_address)
+                'nonce': self.w3.eth.get_transaction_count(real_wallet_address)
             })
             
             logger.info("Transaction built, signing...")
-            
-            # Sign and send
-            private_key = self.client.config.private_key
-            if private_key.startswith('0x'):
-                private_key = private_key[2:]
             
             signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
             # Handle both old and new Web3.py versions
@@ -477,7 +482,18 @@ class PolymarketRedeemer:
         """Claim using ConditionalTokens contract directly. Returns (success, tx_hash)"""
         try:
             logger.info(f"🔄 Attempting ConditionalTokens claim for condition: {condition_id[:10]}...")
-            funder_address = Web3.to_checksum_address(self.client.config.funder_address)
+            
+            # Get the REAL wallet address from private key (not proxy)
+            private_key = self.client.config.private_key
+            if private_key.startswith('0x'):
+                private_key = private_key[2:]
+            
+            # Derive the actual wallet address from private key
+            account = self.w3.eth.account.from_key(private_key)
+            real_wallet_address = account.address
+            
+            logger.debug(f"Using real wallet address: {real_wallet_address}")
+            
             condition_id_bytes = bytes.fromhex(condition_id[2:] if condition_id.startswith('0x') else condition_id)
             
             # For Polymarket, parentCollectionId is usually 0
@@ -488,25 +504,20 @@ class PolymarketRedeemer:
             
             logger.debug(f"Using USDC: {self.USDC_ADDRESS}, indexSets: {index_sets}")
             
-            # Build transaction
+            # Build transaction using REAL wallet address
             tx_data = self.conditional_tokens.functions.redeemPositions(
                 Web3.to_checksum_address(self.USDC_ADDRESS),
                 parent_collection_id,
                 condition_id_bytes,
                 index_sets
             ).build_transaction({
-                'from': funder_address,
+                'from': real_wallet_address,  # Use REAL address for blockchain tx
                 'gas': 300000,
                 'gasPrice': self.w3.eth.gas_price,
-                'nonce': self.w3.eth.get_transaction_count(funder_address)
+                'nonce': self.w3.eth.get_transaction_count(real_wallet_address)
             })
             
             logger.info("Transaction built, signing...")
-            
-            # Sign and send
-            private_key = self.client.config.private_key
-            if private_key.startswith('0x'):
-                private_key = private_key[2:]
             
             signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
             # Handle both old and new Web3.py versions
