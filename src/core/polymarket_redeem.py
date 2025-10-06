@@ -534,7 +534,34 @@ class PolymarketRedeemer:
             
             logger.debug(f"Safe nonce: {safe_nonce}")
             
-            # Build Safe transaction
+            # Create Safe transaction hash for signing
+            safe_tx_hash = self.w3.keccak(
+                encode(
+                    ['address', 'uint256', 'bytes', 'uint8', 'uint256', 'uint256', 'uint256', 'address', 'address', 'uint256'],
+                    [
+                        Web3.to_checksum_address(self.CONDITIONAL_TOKENS_ADDRESS),
+                        0,  # value
+                        bytes.fromhex(redeem_call_data[2:]),
+                        0,  # operation
+                        0,  # safeTxGas
+                        0,  # baseGas
+                        0,  # gasPrice
+                        Web3.to_checksum_address("0x0000000000000000000000000000000000000000"),
+                        Web3.to_checksum_address("0x0000000000000000000000000000000000000000"),
+                        safe_nonce
+                    ]
+                )
+            )
+            
+            # Sign the Safe transaction hash
+            safe_signature = account.signHash(safe_tx_hash)
+            
+            # Format signature for Gnosis Safe (r + s + v)
+            signature_bytes = safe_signature.signature
+            
+            logger.debug(f"Safe signature created: {signature_bytes.hex()[:20]}...")
+            
+            # Build Safe transaction with proper signature
             safe_tx_data = safe_contract.functions.execTransaction(
                 Web3.to_checksum_address(self.CONDITIONAL_TOKENS_ADDRESS),  # to
                 0,  # value
@@ -545,7 +572,7 @@ class PolymarketRedeemer:
                 0,  # gasPrice
                 "0x0000000000000000000000000000000000000000",  # gasToken
                 "0x0000000000000000000000000000000000000000",  # refundReceiver
-                b""  # signatures (will add after signing)
+                signature_bytes  # Proper signature
             ).build_transaction({
                 'from': signer_address,
                 'gas': 500000,
@@ -553,9 +580,9 @@ class PolymarketRedeemer:
                 'nonce': self.w3.eth.get_transaction_count(signer_address)
             })
             
-            logger.info("Signing Safe transaction...")
+            logger.info("Signing and sending transaction...")
             
-            # Sign and send
+            # Sign and send the blockchain transaction
             signed_tx = self.w3.eth.account.sign_transaction(safe_tx_data, private_key)
             raw_tx = signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
             tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
