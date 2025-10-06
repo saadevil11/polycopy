@@ -514,15 +514,12 @@ class PolymarketRedeemer:
             index_sets = [1, 2]
             
             # Encode the function call
-            redeem_call_data = self.conditional_tokens.encodeABI(
-                fn_name='redeemPositions',
-                args=[
-                    Web3.to_checksum_address(self.USDC_ADDRESS),
-                    parent_collection_id,
-                    condition_id_bytes,
-                    index_sets
-                ]
-            )
+            redeem_call_data = self.conditional_tokens.functions.redeemPositions(
+                Web3.to_checksum_address(self.USDC_ADDRESS),
+                parent_collection_id,
+                condition_id_bytes,
+                index_sets
+            )._encode_transaction_data()
             
             logger.debug(f"Encoded redeem call data: {redeem_call_data[:66]}...")
             
