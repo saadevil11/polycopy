@@ -534,14 +534,32 @@ class PolymarketRedeemer:
             
             logger.debug(f"Safe nonce: {safe_nonce}")
             
-            # Create Safe transaction hash for signing
+            # Get domain separator for EIP-712
+            # Safe version 1.3.0 uses specific domain
+            domain_separator = self.w3.keccak(
+                encode(
+                    ['bytes32', 'uint256', 'address'],
+                    [
+                        self.w3.keccak(text="EIP712Domain(uint256 chainId,address verifyingContract)"),
+                        137,  # Polygon chain ID
+                        Web3.to_checksum_address(proxy_address)
+                    ]
+                )
+            )
+            
+            # Create Safe transaction hash (EIP-712 typed)
+            safe_tx_type_hash = self.w3.keccak(
+                text="SafeTx(address to,uint256 value,bytes data,uint8 operation,uint256 safeTxGas,uint256 baseGas,uint256 gasPrice,address gasToken,address refundReceiver,uint256 nonce)"
+            )
+            
             safe_tx_hash = self.w3.keccak(
                 encode(
-                    ['address', 'uint256', 'bytes', 'uint8', 'uint256', 'uint256', 'uint256', 'address', 'address', 'uint256'],
+                    ['bytes32', 'address', 'uint256', 'bytes32', 'uint8', 'uint256', 'uint256', 'uint256', 'address', 'address', 'uint256'],
                     [
+                        safe_tx_type_hash,
                         Web3.to_checksum_address(self.CONDITIONAL_TOKENS_ADDRESS),
                         0,  # value
-                        bytes.fromhex(redeem_call_data[2:]),
+                        self.w3.keccak(bytes.fromhex(redeem_call_data[2:])),  # hash of data
                         0,  # operation
                         0,  # safeTxGas
                         0,  # baseGas
@@ -553,13 +571,25 @@ class PolymarketRedeemer:
                 )
             )
             
-            # Sign the Safe transaction hash
-            from eth_account.messages import encode_defunct
-            message = encode_defunct(safe_tx_hash)
-            safe_signature = account.sign_message(message)
+            # Create EIP-712 message hash
+            eip712_message_hash = self.w3.keccak(
+                b"\x19\x01" + domain_separator + safe_tx_hash
+            )
+            
+            logger.debug(f"EIP-712 message hash: {eip712_message_hash.hex()[:20]}...")
+            
+            # Sign the EIP-712 hash directly
+            signature = account.signHash(eip712_message_hash)
             
             # Format signature for Gnosis Safe (r + s + v)
-            signature_bytes = safe_signature.signature
+            # Gnosis Safe expects v to be 27 or 28, not 0 or 1
+            r = signature.r.to_bytes(32, 'big')
+            s = signature.s.to_bytes(32, 'big')
+            v = signature.v
+            if v < 27:
+                v += 27
+            
+            signature_bytes = r + s + bytes([v])
             
             logger.debug(f"Safe signature created: {signature_bytes.hex()[:20]}...")
             
