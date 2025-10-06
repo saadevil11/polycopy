@@ -579,7 +579,8 @@ class PolymarketRedeemer:
             logger.debug(f"EIP-712 message hash: {eip712_message_hash.hex()[:20]}...")
             
             # Sign the EIP-712 hash directly
-            signature = account.signHash(eip712_message_hash)
+            from eth_account.messages import _hash_eip191_message, encode_defunct
+            signature = account.unsafe_sign_hash(eip712_message_hash)
             
             # Format signature for Gnosis Safe (r + s + v)
             # Gnosis Safe expects v to be 27 or 28, not 0 or 1
