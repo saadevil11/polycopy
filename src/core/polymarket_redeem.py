@@ -449,7 +449,9 @@ class PolymarketRedeemer:
                 private_key = private_key[2:]
             
             signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            # Handle both old and new Web3.py versions
+            raw_tx = signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
+            tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
             
             logger.info(f"✅ Claim transaction sent via CTF Exchange: {tx_hash.hex()}")
             logger.info("Waiting for confirmation (up to 2 minutes)...")
@@ -507,7 +509,9 @@ class PolymarketRedeemer:
                 private_key = private_key[2:]
             
             signed_tx = self.w3.eth.account.sign_transaction(tx_data, private_key)
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+            # Handle both old and new Web3.py versions
+            raw_tx = signed_tx.raw_transaction if hasattr(signed_tx, 'raw_transaction') else signed_tx.rawTransaction
+            tx_hash = self.w3.eth.send_raw_transaction(raw_tx)
             
             logger.info(f"✅ Claim transaction sent via ConditionalTokens: {tx_hash.hex()}")
             logger.info("Waiting for confirmation (up to 2 minutes)...")
