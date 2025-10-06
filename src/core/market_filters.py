@@ -20,13 +20,20 @@ class MarketFilter:
     
     def __init__(self):
         # Load filters from environment or use defaults
-        env_filters = os.getenv("MARKET_FILTERS", "")
-        if env_filters.strip():
-            self.enabled_patterns = [p.strip() for p in env_filters.split(",") if p.strip()]
-            logger.info(f"Loaded filters from environment: {self.enabled_patterns}")
-        else:
+        env_filters = os.getenv("MARKET_FILTERS", None)
+        
+        if env_filters is None:
+            # MARKET_FILTERS not set in .env - use defaults
             self.enabled_patterns = self.DEFAULT_PATTERNS.copy()
             logger.info(f"Using default filters: {self.enabled_patterns}")
+        elif env_filters.strip() == "":
+            # MARKET_FILTERS set but empty - copy ALL markets
+            self.enabled_patterns = []
+            logger.info("MARKET_FILTERS is empty - copying ALL markets (no filtering)")
+        else:
+            # MARKET_FILTERS has values - use them
+            self.enabled_patterns = [p.strip() for p in env_filters.split(",") if p.strip()]
+            logger.info(f"Loaded filters from environment: {self.enabled_patterns}")
     
     def load_default_patterns(self):
         """Load default market patterns"""
