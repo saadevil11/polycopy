@@ -294,22 +294,12 @@ class PolymarketRedeemer:
                     
                     # Check if this market is resolved
                     if self._check_market_resolved(market_id):
-                        # ✅ IMPORTANT: Check if there are actually tokens to claim
-                        # (market might be resolved but already claimed manually)
-                        has_tokens = self._has_claimable_tokens(market_id)
-                        
-                        if has_tokens:
-                            logger.info(f"✅ Market resolved and claimable: {market_title}")
-                            claimable.append({
-                                'condition_id': market_id,
-                                'title': market_title or 'Unknown Market',
-                                'tokens': []
-                            })
-                        else:
-                            logger.debug(f"⏭️  Market resolved but already claimed: {market_title}")
-                            # Auto-mark as claimed since there's nothing to claim
-                            self._mark_market_claimed(market_id, market_title, "manually_claimed")
-                            skipped_count += 1
+                        logger.info(f"✅ Market resolved and claimable: {market_title}")
+                        claimable.append({
+                            'condition_id': market_id,
+                            'title': market_title or 'Unknown Market',
+                            'tokens': []
+                        })
                     else:
                         logger.debug(f"Market not resolved yet: {market_title}")
                         
