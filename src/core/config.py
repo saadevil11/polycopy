@@ -69,7 +69,11 @@ class BotConfig:
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     
     # Database (for tracking trades)
-    db_file: str = "trades.db"
+    # Use /app/data for Railway persistent volume, fallback to local for dev
+    db_file: str = os.path.join(
+        os.getenv("DB_PATH", "./data"),
+        "trades.db"
+    )
     
     # Safety
     dry_run: bool = False  # If True, only log trades without executing

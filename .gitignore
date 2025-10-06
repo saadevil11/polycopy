@@ -33,7 +33,7 @@ env/
 *.db
 *.sqlite
 *.sqlite3
-data/trades.db
+data/
 
 # Logs
 *.log
