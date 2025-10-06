@@ -554,7 +554,9 @@ class PolymarketRedeemer:
             )
             
             # Sign the Safe transaction hash
-            safe_signature = account.signHash(safe_tx_hash)
+            from eth_account.messages import encode_defunct
+            message = encode_defunct(safe_tx_hash)
+            safe_signature = account.sign_message(message)
             
             # Format signature for Gnosis Safe (r + s + v)
             signature_bytes = safe_signature.signature
