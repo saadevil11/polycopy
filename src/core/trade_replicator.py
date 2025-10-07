@@ -148,11 +148,19 @@ class TradeReplicator:
             logger.info(f"Executing copy trade for {copy_trade.original_trade.trade_id}")
             
             # Place market order for speed
-            order_id = self.client.place_market_order(
-                token_id=copy_trade.original_trade.token_id,
-                side=copy_trade.original_trade.side,
-                amount_usd=copy_trade.copy_amount_usd
-            )
+            # For SELL orders, pass the number of shares; for BUY, pass USD amount
+            if copy_trade.original_trade.side == TradeSide.SELL:
+                order_id = self.client.place_market_order(
+                    token_id=copy_trade.original_trade.token_id,
+                    side=copy_trade.original_trade.side,
+                    amount_usd=copy_trade.copy_size  # For SELL: use share count
+                )
+            else:
+                order_id = self.client.place_market_order(
+                    token_id=copy_trade.original_trade.token_id,
+                    side=copy_trade.original_trade.side,
+                    amount_usd=copy_trade.copy_amount_usd  # For BUY: use USD amount
+                )
             
             if order_id:
                 copy_trade.order_id = order_id
