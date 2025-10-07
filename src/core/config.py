@@ -29,6 +29,7 @@ class TradingConfig:
     
     # Filters
     min_market_liquidity_usd: float = 1000.0  # Only trade markets with minimum liquidity
+    min_target_trade_value_usd: float = 4.0   # Skip target trades below this value
     excluded_markets: list = None             # List of market IDs to exclude
     
     def __post_init__(self):
@@ -85,19 +86,20 @@ class BotConfig:
     copy_merge_actions: bool = True  # Copy merge actions from target trader
     copy_redeem_actions: bool = True  # Copy redeem actions from target trader
     auto_redeem_enabled: bool = True  # Automatically redeem winnings from resolved markets
-    auto_redeem_interval_minutes: int = 60  # How often to check for redeemable positions
+    auto_redeem_interval_minutes: int = 7  # How often to check for redeemable positions
 
 # Global configuration instances
 trading_config = TradingConfig(
     target_trader_address=os.getenv("TARGET_TRADER_ADDRESS", ""),
-    copy_percentage=float(os.getenv("COPY_PERCENTAGE", "1.0")),
+    copy_percentage=float(os.getenv("COPY_PERCENTAGE", "0.1")),
     max_position_size_usd=float(os.getenv("MAX_POSITION_SIZE_USD", "1000")),
-    min_position_size_usd=float(os.getenv("MIN_POSITION_SIZE_USD", "10")),
+    min_position_size_usd=float(os.getenv("MIN_POSITION_SIZE_USD", "0.1")),
     max_daily_loss_usd=float(os.getenv("MAX_DAILY_LOSS_USD", "500")),
     max_positions=int(os.getenv("MAX_POSITIONS", "10")),
-    trade_delay_seconds=int(os.getenv("TRADE_DELAY_SECONDS", "5")),
-    monitoring_interval_seconds=int(os.getenv("MONITORING_INTERVAL_SECONDS", "10")),
-    min_market_liquidity_usd=float(os.getenv("MIN_MARKET_LIQUIDITY_USD", "1000"))
+    trade_delay_seconds=int(os.getenv("TRADE_DELAY_SECONDS", "0")),
+    monitoring_interval_seconds=int(os.getenv("MONITORING_INTERVAL_SECONDS", "1")),
+    min_market_liquidity_usd=float(os.getenv("MIN_MARKET_LIQUIDITY_USD", "1000")),
+    min_target_trade_value_usd=float(os.getenv("MIN_TARGET_TRADE_VALUE_USD", "4.0"))
 )
 
 polymarket_config = PolymarketConfig()

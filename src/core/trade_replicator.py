@@ -62,6 +62,11 @@ class TradeReplicator:
             if trade.market_id in self.config.excluded_markets:
                 logger.info(f"Market {trade.market_id} is excluded")
                 return False
+            
+            # Check minimum target trade value
+            if trade.amount_usd < self.config.min_target_trade_value_usd:
+                logger.info(f"Target trade too small: ${trade.amount_usd:.2f} < ${self.config.min_target_trade_value_usd:.2f} - skipping")
+                return False
                 
             # Market filter already checked by WebSocket monitor - skip duplicate check
             
