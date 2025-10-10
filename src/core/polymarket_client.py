@@ -276,7 +276,7 @@ class PolymarketClient:
             )
             
             signed_order = self.client.create_market_order(order_args)
-            response = self.client.post_order(signed_order, OrderType.FOK)
+            response = self.client.post_order(signed_order, OrderType.FAK)
             
             if response.get('success'):
                 order_id = response.get('orderID')
