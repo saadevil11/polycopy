@@ -1,0 +1,25 @@
+{
+  "bots": [
+    {
+      "name": "btc",
+      "db_path": "data/trades.db",
+      "description": "BTC trader bot (Local)",
+      "color": "#007bff",
+      "type": "local"
+    },
+    {
+      "name": "xrp",
+      "db_path": "data/trades.db",
+      "description": "XRP trader bot (Local)",
+      "color": "#28a745",
+      "type": "local"
+    }
+  ],
+  "dashboard": {
+    "port": 8080,
+    "auto_refresh_seconds": 30,
+    "max_positions_per_bot": 5,
+    "max_recent_trades": 20
+  }
+}
+

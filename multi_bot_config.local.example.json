@@ -1,0 +1,30 @@
+{
+  "bots": [
+    {
+      "name": "Bot 1 - Primary Wallet",
+      "db_path": "data/trades.db",
+      "description": "First trader copy bot (Local)",
+      "color": "#007bff",
+      "type": "local"
+    },
+    {
+      "name": "Bot 2 - Secondary Wallet",
+      "db_path": "data/trades_bot2.db",
+      "description": "Second trader copy bot (Local)",
+      "color": "#28a745",
+      "type": "local"
+    }
+  ],
+  "dashboard": {
+    "port": 8080,
+    "auto_refresh_seconds": 30,
+    "max_positions_per_bot": 5,
+    "max_recent_trades": 20
+  },
+  "notes": {
+    "usage": "This is for local testing with local database files",
+    "setup": "Copy this to multi_bot_config.json for local development",
+    "railway_version": "See multi_bot_config.json for Railway configuration"
+  }
+}
+

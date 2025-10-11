@@ -12,6 +12,7 @@ A sophisticated automated trading bot that copies trades from successful Polymar
 - 🛡️ **Risk Management** - Built-in position limits, daily loss caps, and price filters
 - 🔄 **Merge & Redeem** - Automatically copy merge/redeem actions from target traders
 - 🎨 **Beautiful GUI** - Easy-to-use interface for configuration and monitoring
+- 📊 **Multi-Bot Dashboard** - Monitor multiple bots simultaneously in one unified view ⭐ NEW
 - 📊 **Market Filters** - Focus on specific markets (e.g., Bitcoin, Ethereum, Solana)
 - 🧪 **Dry Run Mode** - Test strategies without risking real money
 - 📈 **Trade Analytics** - Track performance with detailed logs and database
@@ -129,17 +130,27 @@ python tools/check_balance.py
 python tools/manual_trade_test.py
 ```
 
-### Web Dashboard
+### Single Bot Dashboard
 ```bash
 python tools/dashboard.py
-# Open http://localhost:5000
+# Open http://localhost:8080
 ```
+
+### Multi-Bot Dashboard ⭐ NEW
+Monitor multiple bots in one unified dashboard:
+```bash
+./start_dashboard.sh
+# Open http://localhost:8080
+```
+
+See [Dashboard Quick Start](DASHBOARD_QUICKSTART.md) for setup instructions.
 
 ## 📖 Documentation
 
 - [Quick Start Guide](docs/QUICKSTART.md)
 - [Wallet Setup Guide](docs/WALLET_SETUP_GUIDE.md)
 - [Railway Deployment Guide](docs/RAILWAY_DEPLOYMENT_GUIDE.md) ⭐ Recommended
+- [Multi-Bot Dashboard Guide](DASHBOARD_QUICKSTART.md) ⭐ NEW - Monitor multiple bots
 - [AWS Deployment Guide](docs/AWS_DEPLOYMENT_GUIDE.md)
 - [Project Overview](docs/PROJECT_OVERVIEW.md)
 
