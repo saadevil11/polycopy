@@ -71,16 +71,16 @@ class BotMonitor:
             return sqlite3.connect(self.db_path)
     
     def _get_railway_connection(self):
-        """Connect to Railway database via HTTP API"""
+        """Download and connect to Railway database"""
         try:
             # Create temporary file for database
             if not self._local_db_cache:
                 self._local_db_cache = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
                 self._local_db_cache.close()
             
-            # Use Railway CLI to download database from the service
-            # This works when both services are in the same Railway project
-            cmd = ["railway", "run", f"--service={self.railway_service}", "cat", self.db_path]
+            # Download database from Railway
+            # Note: This requires Railway CLI to be installed and authenticated
+            cmd = ["/opt/homebrew/bin/railway", "run", f"--service={self.railway_service}", "cat", self.db_path]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
