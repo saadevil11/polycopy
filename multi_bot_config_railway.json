@@ -1,0 +1,30 @@
+{
+  "bots": [
+    {
+      "name": "btc",
+      "db_path": "/mnt/btc-data/trades.db",
+      "description": "BTC trader bot",
+      "color": "#007bff",
+      "type": "local"
+    },
+    {
+      "name": "xrp",
+      "db_path": "/mnt/xrp-data/trades.db",
+      "description": "XRP trader bot",
+      "color": "#28a745",
+      "type": "local"
+    }
+  ],
+  "dashboard": {
+    "port": 8080,
+    "auto_refresh_seconds": 30,
+    "max_positions_per_bot": 5,
+    "max_recent_trades": 20
+  },
+  "notes": {
+    "deployment": "This config is for Railway dashboard service",
+    "volumes": "Mount btc volume to /mnt/btc-data and xrp volume to /mnt/xrp-data",
+    "type": "Use 'local' type since volumes are mounted directly"
+  }
+}
+
