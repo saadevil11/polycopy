@@ -59,11 +59,37 @@ class MarketFilter:
         for pattern in self.enabled_patterns:
             pattern_lower = pattern.lower()
             if pattern_lower in market_title_lower:
+                # Additional check: Exclude 15-minute markets
+                if self._is_fifteen_minute_market(market_title):
+                    logger.debug(f"❌ Skipping 15-minute market: {market_title}")
+                    return False
+                
                 logger.debug(f"✅ Filter match: {pattern}")
                 return True
                 
         # No matches found
         logger.debug(f"❌ No filter match: {market_title}")
+        return False
+    
+    def _is_fifteen_minute_market(self, market_title: str) -> bool:
+        """Check if market is a 15-minute interval market"""
+        import re
+        
+        # Patterns for 15-minute markets:
+        # "12:30AM-12:45AM"
+        # "12:15AM-12:30AM"
+        # "1:45PM-2:00PM"
+        # etc.
+        
+        fifteen_min_patterns = [
+            r'\d{1,2}:\d{2}[AP]M-\d{1,2}:\d{2}[AP]M',  # Time range like 12:30AM-12:45AM
+        ]
+        
+        for pattern in fifteen_min_patterns:
+            if re.search(pattern, market_title, re.IGNORECASE):
+                # Found a time range - this is a 15-minute market
+                return True
+        
         return False
     
     def get_enabled_patterns(self) -> List[str]:
