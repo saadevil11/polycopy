@@ -403,13 +403,10 @@ class PolymarketClient:
         
         logger.info(f"🎯 Starting enhanced order execution: {side.value} ${amount_usd:.2f}")
         
-        # Get current market price for slippage calculation
-        current_price = None
-        try:
-            current_price = self.client.get_midpoint(token_id)
-            logger.debug(f"Current market price: {current_price:.4f}")
-        except Exception as e:
-            logger.warning(f"Could not get current price: {e}")
+        # Note: We don't fetch current market price because:
+        # - FAK orders are market orders (price doesn't matter)
+        # - GTC orders should use target's price, not current market price
+        # This prevents excessive slippage when market has moved
         
         # Strategy 1: Try FAK orders with retries
         fak_order_id = None
@@ -432,7 +429,14 @@ class PolymarketClient:
                     if order_status:
                         # Check fill status
                         filled_size = float(order_status.get('size_matched', 0))
-                        requested_size = amount_usd / current_price if current_price else 0
+                        
+                        # Calculate requested size using target's price
+                        if original_price and original_price > 0:
+                            requested_size = amount_usd / original_price
+                        else:
+                            # Fallback: use size from order status if no price available
+                            requested_size = float(order_status.get('original_size', filled_size))
+                        
                         fill_percentage = (filled_size / requested_size) if requested_size > 0 else 0
                         
                         fak_filled_size = filled_size
@@ -495,10 +499,11 @@ class PolymarketClient:
                 gtc_amount = amount_usd
             
             try:
-                # Use target trader's price as base, or current price as fallback
-                base_price = original_price if original_price and original_price > 0 else current_price
+                # ALWAYS use target trader's price for GTC orders
+                # This ensures we match target's execution, not current market
+                base_price = original_price
                 
-                if base_price:
+                if base_price and base_price > 0:
                     # Determine limit price based on configuration
                     if config.gtc_use_exact_target_price:
                         # Use exact target price (no slippage)
@@ -517,7 +522,7 @@ class PolymarketClient:
                     # Calculate size from GTC amount (full or remainder)
                     size = gtc_amount / limit_price
                     
-                    price_source = "target's price" if original_price and original_price > 0 else "current market"
+                    price_source = "target's price"
                     
                     if fak_filled_size > 0:
                         logger.info(f"📊 Placing GTC for remainder: {size:.2f} shares @ ${limit_price:.4f}")
