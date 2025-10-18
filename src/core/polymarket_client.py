@@ -501,20 +501,13 @@ class PolymarketClient:
                     await asyncio.sleep(config.retry_delay_seconds)
         
         # Strategy 2: Fallback to GTC order if enabled
-        # Note: Only use GTC for BUY orders, not SELL orders
-        if config.use_gtc_fallback and side == TradeSide.BUY:
-            # Determine if we're filling remainder or full order
-            if fak_filled_size > 0 and fak_fill_percentage > 0 and fak_fill_percentage < 0.90:
-                # FAK got partial fill (<90%) - place GTC for remainder
-                logger.warning(f"🔄 Placing GTC for remaining {(1-fak_fill_percentage)*100:.1f}%...")
-                details['strategy_used'] = 'FAK+GTC_REMAINDER'
-                remaining_percentage = 1 - fak_fill_percentage
-                gtc_amount = amount_usd * remaining_percentage
-            else:
-                # FAK completely failed (0% fill) - place GTC for full amount
-                logger.warning("🔄 FAK orders failed, trying GTC fallback...")
-                details['strategy_used'] = 'GTC_FALLBACK'
-                gtc_amount = amount_usd
+        # Use GTC for both BUY and SELL when FAK completely fails (0% fill)
+        # Do NOT use GTC for partial fills - accept what we got
+        if config.use_gtc_fallback and fak_filled_size == 0:
+            # FAK completely failed (0% fill) - place GTC for full amount
+            logger.warning("🔄 FAK orders failed completely, trying GTC fallback...")
+            details['strategy_used'] = 'GTC_FALLBACK'
+            gtc_amount = amount_usd
             
             try:
                 # ALWAYS use target trader's price for GTC orders
@@ -596,10 +589,12 @@ class PolymarketClient:
             except Exception as e:
                 logger.error(f"❌ GTC fallback error: {e}")
                 details['failure_reasons'].append(f"GTC fallback: {str(e)}")
-        elif side == TradeSide.SELL and fak_filled_size == 0:
-            # SELL orders don't use GTC - if FAK fails, the order fails
-            logger.error("❌ SELL order failed - no GTC fallback for sells")
-            details['failure_reasons'].append("SELL order: No GTC fallback available")
+        elif fak_filled_size > 0:
+            # Partial fill (for both BUY and SELL) - accept what we got
+            logger.warning(f"⚠️  Order partially filled: {fak_filled_size:.2f} shares ({fak_fill_percentage*100:.1f}%)")
+            logger.info(f"📊 Accepting partial fill (no GTC for partial fills)")
+            details['filled_amount'] = fak_filled_size
+            return fak_order_id, OrderExecutionResult.PARTIAL_FILL, details
         
         # All strategies failed
         logger.error(f"❌ All order execution strategies failed after {details['attempts']} attempts")
