@@ -501,7 +501,8 @@ class PolymarketClient:
                     await asyncio.sleep(config.retry_delay_seconds)
         
         # Strategy 2: Fallback to GTC order if enabled
-        if config.use_gtc_fallback:
+        # Note: Only use GTC for BUY orders, not SELL orders
+        if config.use_gtc_fallback and side == TradeSide.BUY:
             # Determine if we're filling remainder or full order
             if fak_filled_size > 0 and fak_fill_percentage > 0 and fak_fill_percentage < 0.90:
                 # FAK got partial fill (<90%) - place GTC for remainder
@@ -595,6 +596,10 @@ class PolymarketClient:
             except Exception as e:
                 logger.error(f"❌ GTC fallback error: {e}")
                 details['failure_reasons'].append(f"GTC fallback: {str(e)}")
+        elif side == TradeSide.SELL and fak_filled_size == 0:
+            # SELL orders don't use GTC - if FAK fails, the order fails
+            logger.error("❌ SELL order failed - no GTC fallback for sells")
+            details['failure_reasons'].append("SELL order: No GTC fallback available")
         
         # All strategies failed
         logger.error(f"❌ All order execution strategies failed after {details['attempts']} attempts")
