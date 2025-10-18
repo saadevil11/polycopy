@@ -403,10 +403,23 @@ class PolymarketClient:
         
         logger.info(f"🎯 Starting enhanced order execution: {side.value} ${amount_usd:.2f}")
         
-        # Note: We don't fetch current market price because:
-        # - FAK orders are market orders (price doesn't matter)
-        # - GTC orders should use target's price, not current market price
-        # This prevents excessive slippage when market has moved
+        # Get current market price for FAK fill percentage calculation
+        # FAK executes at current market price (not target's price due to delay)
+        current_price = None
+        try:
+            midpoint_data = self.client.get_midpoint(token_id)
+            # get_midpoint returns a dict with 'mid' key
+            if isinstance(midpoint_data, dict):
+                current_price = float(midpoint_data.get('mid', 0))
+            elif isinstance(midpoint_data, (int, float)):
+                current_price = float(midpoint_data)
+            
+            if current_price and current_price > 0:
+                logger.debug(f"Current market price: ${current_price:.4f}")
+            else:
+                current_price = None
+        except Exception as e:
+            logger.debug(f"Could not get current price (will use target's price): {e}")
         
         # Strategy 1: Try FAK orders with retries
         fak_order_id = None
@@ -430,11 +443,15 @@ class PolymarketClient:
                         # Check fill status
                         filled_size = float(order_status.get('size_matched', 0))
                         
-                        # Calculate requested size using target's price
-                        if original_price and original_price > 0:
+                        # Calculate requested size for FAK using current market price
+                        # (FAK executes at current price due to delay, not target's price)
+                        if current_price and current_price > 0:
+                            requested_size = amount_usd / current_price
+                        elif original_price and original_price > 0:
+                            # Fallback to target's price if current price unavailable
                             requested_size = amount_usd / original_price
                         else:
-                            # Fallback: use size from order status if no price available
+                            # Last resort: use size from order status
                             requested_size = float(order_status.get('original_size', filled_size))
                         
                         fill_percentage = (filled_size / requested_size) if requested_size > 0 else 0
