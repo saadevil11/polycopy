@@ -9,7 +9,7 @@ from typing import Optional
 from loguru import logger
 
 from src.core.config import bot_config, trading_config, polymarket_config
-from src.core.models import BotStatus, RiskMetrics, TraderTrade, CopyTrade
+from src.core.models import BotStatus, RiskMetrics, TraderTrade, CopyTrade, AccountRestrictedException
 from src.core.polymarket_client import PolymarketClient
 from src.monitors.trader_monitor import TraderMonitor
 from src.monitors.alternative_trader_monitor import AlternativeTraderMonitor
@@ -28,6 +28,7 @@ class PolymarketCopyTradingBot:
         self.config = bot_config
         self.trading_config = trading_config
         self.running = False
+        self.account_restricted = False  # Flag to track if account is restricted
         
         self.start_time = datetime.now()
         
@@ -172,6 +173,11 @@ class PolymarketCopyTradingBot:
     async def _on_new_trade(self, trade_or_action):
         """Callback for when a new trade or merge action is detected"""
         try:
+            # Check if account is already restricted
+            if self.account_restricted:
+                logger.warning("Account is restricted - skipping all trades")
+                return
+            
             # Check if this is a special action
             if isinstance(trade_or_action, dict):
                 action_type = trade_or_action.get('action')
@@ -212,6 +218,37 @@ class PolymarketCopyTradingBot:
                     logger.error(f"Failed to copy trade: {copy_trade.error_message}")
                 elif copy_trade.status.value == "skipped":
                     logger.info(f"Trade skipped: {copy_trade.error_message}")
+            
+        except AccountRestrictedException as e:
+            # Critical error - account is restricted
+            logger.critical("=" * 80)
+            logger.critical("🚨 CRITICAL: ACCOUNT RESTRICTION DETECTED 🚨")
+            logger.critical("=" * 80)
+            logger.critical(f"Restriction Type: {e.restriction_type}")
+            logger.critical(f"Error Message: {e.message}")
+            logger.critical("")
+            logger.critical("Your Polymarket account is in CLOSED-ONLY MODE")
+            logger.critical("This means you can only CLOSE existing positions, not open new ones")
+            logger.critical("")
+            logger.critical("THE BOT WILL NOW STOP TRADING")
+            logger.critical("")
+            logger.critical("To resolve this issue:")
+            logger.critical("1. Contact Polymarket support to understand why your account was restricted")
+            logger.critical("2. Check if you're accessing from a restricted region")
+            logger.critical("3. Verify your account is fully compliant with Polymarket's terms")
+            logger.critical("4. Consider using a different wallet address that isn't restricted")
+            logger.critical("=" * 80)
+            
+            # Set the restriction flag
+            self.account_restricted = True
+            
+            # Add to errors
+            self.errors.append(f"CRITICAL: Account restricted - {e.restriction_type}: {e.message}")
+            self.failed_trades += 1
+            
+            # Stop the bot
+            logger.critical("Stopping the bot due to account restriction...")
+            self.running = False
             
         except Exception as e:
             logger.error(f"Error processing new trade: {e}")
@@ -350,6 +387,9 @@ class PolymarketCopyTradingBot:
             logger.info(f"Daily P&L: ${risk_metrics.daily_pnl_usd:.2f}")
             logger.info(f"Total Position Value: ${risk_metrics.total_position_value_usd:.2f}")
             
+            if self.account_restricted:
+                logger.critical("⛔ ACCOUNT RESTRICTED - Bot will not place new trades")
+            
             if self.errors:
                 logger.warning(f"Recent errors: {len(self.errors)}")
                 for error in self.errors[-3:]:  # Show last 3 errors
@@ -367,6 +407,7 @@ class PolymarketCopyTradingBot:
             
             return {
                 'running': self.running,
+                'account_restricted': self.account_restricted,
                 'uptime_seconds': uptime.total_seconds(),
                 'monitoring_status': self.trader_monitor.get_monitoring_status(),
                 'trades_today': self.trades_copied_today,

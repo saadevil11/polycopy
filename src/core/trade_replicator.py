@@ -7,7 +7,7 @@ from typing import Optional, List
 from loguru import logger
 
 from src.core.polymarket_client import PolymarketClient
-from src.core.models import TraderTrade, CopyTrade, OrderType, TradeStatus, TradeSide
+from src.core.models import TraderTrade, CopyTrade, OrderType, TradeStatus, TradeSide, AccountRestrictedException
 from src.core.config import trading_config, bot_config
 from src.core.market_filters import MarketFilter
 
@@ -143,52 +143,97 @@ class TradeReplicator:
             return 0.0, 0.0
     
     async def _execute_trade(self, copy_trade: CopyTrade) -> CopyTrade:
-        """Execute the actual trade"""
+        """Execute the actual trade with enhanced retry logic"""
         try:
-            logger.info(f"Executing copy trade for {copy_trade.original_trade.trade_id}")
+            logger.info(f"🚀 Executing copy trade for {copy_trade.original_trade.trade_id}")
+            logger.info(f"   Side: {copy_trade.original_trade.side.value}")
+            logger.info(f"   Amount: ${copy_trade.copy_amount_usd:.2f}")
+            logger.info(f"   Token: {copy_trade.original_trade.token_id}")
             
-            # Place market order for speed
-            # For SELL orders, pass the number of shares; for BUY, pass USD amount
+            # Determine amount to use (shares for SELL, USD for BUY)
             if copy_trade.original_trade.side == TradeSide.SELL:
-                order_id = self.client.place_market_order(
-                    token_id=copy_trade.original_trade.token_id,
-                    side=copy_trade.original_trade.side,
-                    amount_usd=copy_trade.copy_size  # For SELL: use share count
-                )
+                amount = copy_trade.copy_size  # For SELL: use share count
             else:
-                order_id = self.client.place_market_order(
-                    token_id=copy_trade.original_trade.token_id,
-                    side=copy_trade.original_trade.side,
-                    amount_usd=copy_trade.copy_amount_usd  # For BUY: use USD amount
-                )
+                amount = copy_trade.copy_amount_usd  # For BUY: use USD amount
             
+            # Use enhanced order execution with retry logic
+            order_id, result, details = await self.client.place_order_with_retry(
+                token_id=copy_trade.original_trade.token_id,
+                side=copy_trade.original_trade.side,
+                amount_usd=amount,
+                original_price=copy_trade.original_trade.price
+            )
+            
+            # Process result
             if order_id:
                 copy_trade.order_id = order_id
                 copy_trade.execution_timestamp = datetime.now()
-                copy_trade.status = TradeStatus.EXECUTED
                 
-                # Try to get execution price (might need to wait a moment)
-                await asyncio.sleep(1)
-                order_status = self.client.get_order_status(order_id)
-                if order_status and 'price' in order_status:
-                    copy_trade.execution_price = float(order_status['price'])
+                # Set execution price from details
+                if details.get('avg_price', 0) > 0:
+                    copy_trade.execution_price = details['avg_price']
+                elif details.get('filled_amount', 0) > 0:
+                    # Try to get from order status
+                    order_status = self.client.get_order_status(order_id)
+                    if order_status and 'price' in order_status:
+                        copy_trade.execution_price = float(order_status['price'])
                 
-                logger.success(f"Trade executed successfully: {order_id}")
+                # Determine status based on result
+                from src.core.polymarket_client import OrderExecutionResult
+                
+                if result == OrderExecutionResult.SUCCESS:
+                    copy_trade.status = TradeStatus.EXECUTED
+                    logger.success(f"✅ Trade executed successfully: {order_id}")
+                    logger.info(f"   Strategy: {details['strategy_used']}")
+                    logger.info(f"   Attempts: {details['attempts']}")
+                    logger.info(f"   Filled: {details['filled_amount']:.2f} shares")
+                    
+                elif result == OrderExecutionResult.PARTIAL_FILL:
+                    copy_trade.status = TradeStatus.EXECUTED  # Still count as executed
+                    fill_pct = (details['filled_amount'] / copy_trade.copy_size * 100) if copy_trade.copy_size > 0 else 0
+                    copy_trade.error_message = f"Partial fill: {fill_pct:.1f}% filled"
+                    logger.warning(f"⚠️  Trade partially filled: {order_id} ({fill_pct:.1f}%)")
+                    logger.info(f"   Filled: {details['filled_amount']:.2f} of {copy_trade.copy_size:.2f} shares")
+                    
+                else:
+                    # Shouldn't happen if order_id is returned, but handle it
+                    copy_trade.status = TradeStatus.FAILED
+                    copy_trade.error_message = f"Unexpected result: {result.value}"
+                    logger.error(f"❌ Unexpected execution result: {result.value}")
                 
                 # Update risk manager
                 await self.risk_manager.on_trade_executed(copy_trade)
                 
             else:
+                # Order failed completely
                 copy_trade.status = TradeStatus.FAILED
-                copy_trade.error_message = "Failed to place order"
-                logger.error("Failed to place market order")
+                copy_trade.error_message = f"Order failed: {result.value}. Reasons: {', '.join(details['failure_reasons'])}"
+                
+                logger.error(f"❌ Trade execution failed after {details['attempts']} attempts")
+                logger.error(f"   Result: {result.value}")
+                logger.error(f"   Reasons: {', '.join(details['failure_reasons'])}")
+                
+                # Log specific failure type for analysis
+                from src.core.polymarket_client import OrderExecutionResult
+                if result == OrderExecutionResult.INSUFFICIENT_LIQUIDITY:
+                    logger.warning("💧 Market has insufficient liquidity for this order size")
+                elif result == OrderExecutionResult.PRICE_MOVED:
+                    logger.warning("📈 Price moved significantly during execution")
+                elif result == OrderExecutionResult.TIMEOUT:
+                    logger.warning("⏰ Order execution timed out")
             
             return copy_trade
             
+        except AccountRestrictedException as e:
+            # Re-raise account restriction errors - these are critical and should stop the bot
+            logger.critical(f"⛔ Account restriction detected: {e.message}")
+            raise
+            
         except Exception as e:
-            logger.error(f"Error executing trade: {e}")
+            logger.error(f"❌ Unexpected error executing trade: {e}")
+            logger.exception(e)  # Log full traceback
             copy_trade.status = TradeStatus.FAILED
-            copy_trade.error_message = str(e)
+            copy_trade.error_message = f"Unexpected error: {str(e)}"
             return copy_trade
     
     def _simulate_trade(self, copy_trade: CopyTrade) -> CopyTrade:

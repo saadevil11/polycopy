@@ -4,7 +4,8 @@ Polymarket API client wrapper for copy trading bot
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+from enum import Enum
 import requests
 from loguru import logger
 
@@ -16,7 +17,17 @@ from py_clob_client.clob_types import (
 from py_clob_client.order_builder.constants import BUY, SELL
 
 from src.core.config import polymarket_config, trading_config, bot_config
-from src.core.models import TraderTrade, MarketInfo, TradeSide, Position
+from src.core.models import TraderTrade, MarketInfo, TradeSide, Position, AccountRestrictedException
+
+
+class OrderExecutionResult(Enum):
+    """Result of order execution attempt"""
+    SUCCESS = "success"
+    PARTIAL_FILL = "partial_fill"
+    FAILED = "failed"
+    INSUFFICIENT_LIQUIDITY = "insufficient_liquidity"
+    PRICE_MOVED = "price_moved"
+    TIMEOUT = "timeout"
 
 
 class PolymarketClient:
@@ -287,6 +298,18 @@ class PolymarketClient:
                 return None
                 
         except Exception as e:
+            error_str = str(e)
+            
+            # Check for "closed only mode" restriction
+            if "closed only mode" in error_str.lower():
+                logger.critical("⛔ ACCOUNT RESTRICTED: Your account is in CLOSED-ONLY MODE")
+                logger.critical("You can only close existing positions, not open new ones")
+                logger.critical("This is a critical error - the bot will stop trading")
+                raise AccountRestrictedException(
+                    f"Account is in closed-only mode: {error_str}",
+                    restriction_type="closed_only"
+                )
+            
             logger.error(f"Failed to place market order: {e}")
             return None
     
@@ -314,6 +337,18 @@ class PolymarketClient:
                 return None
                 
         except Exception as e:
+            error_str = str(e)
+            
+            # Check for "closed only mode" restriction
+            if "closed only mode" in error_str.lower():
+                logger.critical("⛔ ACCOUNT RESTRICTED: Your account is in CLOSED-ONLY MODE")
+                logger.critical("You can only close existing positions, not open new ones")
+                logger.critical("This is a critical error - the bot will stop trading")
+                raise AccountRestrictedException(
+                    f"Account is in closed-only mode: {error_str}",
+                    restriction_type="closed_only"
+                )
+            
             logger.error(f"Failed to place limit order: {e}")
             return None
     
@@ -341,3 +376,206 @@ class PolymarketClient:
         except Exception as e:
             logger.error(f"Failed to get order status for {order_id}: {e}")
             return None
+    
+    async def place_order_with_retry(
+        self, 
+        token_id: str, 
+        side: TradeSide, 
+        amount_usd: float,
+        original_price: Optional[float] = None
+    ) -> Tuple[Optional[str], OrderExecutionResult, Dict[str, Any]]:
+        """
+        Enhanced order placement with retry logic and fallback strategies
+        
+        Returns:
+            - order_id: The order ID if successful, None otherwise
+            - result: OrderExecutionResult enum indicating outcome
+            - details: Dictionary with execution details (filled_amount, price, etc.)
+        """
+        config = self.trading_config
+        details = {
+            'attempts': 0,
+            'filled_amount': 0.0,
+            'avg_price': 0.0,
+            'strategy_used': 'FAK',
+            'failure_reasons': []
+        }
+        
+        logger.info(f"🎯 Starting enhanced order execution: {side.value} ${amount_usd:.2f}")
+        
+        # Get current market price for slippage calculation
+        current_price = None
+        try:
+            current_price = self.client.get_midpoint(token_id)
+            logger.debug(f"Current market price: {current_price:.4f}")
+        except Exception as e:
+            logger.warning(f"Could not get current price: {e}")
+        
+        # Strategy 1: Try FAK orders with retries
+        fak_order_id = None
+        fak_filled_size = 0.0
+        fak_fill_percentage = 0.0
+        
+        for attempt in range(config.max_order_retries):
+            details['attempts'] = attempt + 1
+            logger.info(f"📤 Attempt {attempt + 1}/{config.max_order_retries}: Placing FAK order...")
+            
+            try:
+                order_id = self.place_market_order(token_id, side, amount_usd)
+                
+                if order_id:
+                    fak_order_id = order_id
+                    # Wait briefly and check order status
+                    await asyncio.sleep(1)
+                    order_status = self.get_order_status(order_id)
+                    
+                    if order_status:
+                        # Check fill status
+                        filled_size = float(order_status.get('size_matched', 0))
+                        requested_size = amount_usd / current_price if current_price else 0
+                        fill_percentage = (filled_size / requested_size) if requested_size > 0 else 0
+                        
+                        fak_filled_size = filled_size
+                        fak_fill_percentage = fill_percentage
+                        
+                        details['filled_amount'] = filled_size
+                        details['avg_price'] = float(order_status.get('price', 0))
+                        
+                        # Full fill (≥90%) - success, no need for GTC!
+                        if fill_percentage >= 0.90:  # 90% or more is considered full
+                            logger.success(f"✅ Order fully filled: {order_id} ({fill_percentage*100:.1f}%)")
+                            return order_id, OrderExecutionResult.SUCCESS, details
+                        
+                        # Any partial fill (<90%) - will use GTC for remainder
+                        elif fill_percentage > 0:
+                            logger.warning(f"⚠️  Partial fill: {order_id} ({fill_percentage*100:.1f}%)")
+                            logger.info(f"📊 Will place GTC for remaining {(1-fill_percentage)*100:.1f}%")
+                            # Don't return yet - will place GTC for remainder
+                            break
+                        
+                        else:
+                            # 0% fill - completely failed
+                            logger.warning(f"❌ No fill: {order_id} (0% filled)")
+                            details['failure_reasons'].append(f"Attempt {attempt+1}: 0% filled")
+                    else:
+                        logger.warning(f"⚠️  Could not verify order status for {order_id}")
+                        details['failure_reasons'].append(f"Attempt {attempt+1}: Status check failed")
+                else:
+                    logger.warning(f"❌ Order placement failed on attempt {attempt + 1}")
+                    details['failure_reasons'].append(f"Attempt {attempt+1}: Order placement failed")
+                
+                # Wait before retry
+                if attempt < config.max_order_retries - 1:
+                    logger.info(f"⏳ Waiting {config.retry_delay_seconds}s before retry...")
+                    await asyncio.sleep(config.retry_delay_seconds)
+                    
+            except AccountRestrictedException:
+                # Re-raise account restrictions immediately
+                raise
+            except Exception as e:
+                logger.error(f"❌ Error on attempt {attempt + 1}: {e}")
+                details['failure_reasons'].append(f"Attempt {attempt+1}: {str(e)}")
+                
+                if attempt < config.max_order_retries - 1:
+                    await asyncio.sleep(config.retry_delay_seconds)
+        
+        # Strategy 2: Fallback to GTC order if enabled
+        if config.use_gtc_fallback:
+            # Determine if we're filling remainder or full order
+            if fak_filled_size > 0 and fak_fill_percentage > 0 and fak_fill_percentage < 0.90:
+                # FAK got partial fill (<90%) - place GTC for remainder
+                logger.warning(f"🔄 Placing GTC for remaining {(1-fak_fill_percentage)*100:.1f}%...")
+                details['strategy_used'] = 'FAK+GTC_REMAINDER'
+                remaining_percentage = 1 - fak_fill_percentage
+                gtc_amount = amount_usd * remaining_percentage
+            else:
+                # FAK completely failed (0% fill) - place GTC for full amount
+                logger.warning("🔄 FAK orders failed, trying GTC fallback...")
+                details['strategy_used'] = 'GTC_FALLBACK'
+                gtc_amount = amount_usd
+            
+            try:
+                # Use target trader's price as base, or current price as fallback
+                base_price = original_price if original_price and original_price > 0 else current_price
+                
+                if base_price:
+                    # Determine limit price based on configuration
+                    if config.gtc_use_exact_target_price:
+                        # Use exact target price (no slippage)
+                        limit_price = base_price
+                        slippage_info = "exact target price (no slippage)"
+                    else:
+                        # Calculate acceptable price with slippage FROM TARGET'S PRICE
+                        if side == TradeSide.BUY:
+                            # For buys, willing to pay slightly more than target paid
+                            limit_price = base_price * (1 + config.price_slippage_tolerance)
+                        else:
+                            # For sells, willing to accept slightly less than target got
+                            limit_price = base_price * (1 - config.price_slippage_tolerance)
+                        slippage_info = f"{config.price_slippage_tolerance*100:.1f}% slippage"
+                    
+                    # Calculate size from GTC amount (full or remainder)
+                    size = gtc_amount / limit_price
+                    
+                    price_source = "target's price" if original_price and original_price > 0 else "current market"
+                    
+                    if fak_filled_size > 0:
+                        logger.info(f"📊 Placing GTC for remainder: {size:.2f} shares @ ${limit_price:.4f}")
+                        logger.info(f"   FAK filled: {fak_filled_size:.2f} shares ({fak_fill_percentage*100:.1f}%)")
+                        logger.info(f"   GTC for: {size:.2f} shares ({(1-fak_fill_percentage)*100:.1f}%)")
+                    else:
+                        logger.info(f"📊 Placing GTC order: {size:.2f} shares @ ${limit_price:.4f}")
+                    
+                    logger.info(f"   Base price: ${base_price:.4f} ({price_source})")
+                    logger.info(f"   Strategy: {slippage_info}")
+                    
+                    gtc_order_id = self.place_limit_order(token_id, side, size, limit_price)
+                    
+                    if gtc_order_id:
+                        logger.success(f"✅ GTC order placed: {gtc_order_id}")
+                        logger.info(f"⏰ Order will remain active until filled or cancelled")
+                        
+                        # Wait a bit to see if it fills quickly
+                        await asyncio.sleep(3)
+                        gtc_order_status = self.get_order_status(gtc_order_id)
+                        
+                        if gtc_order_status:
+                            gtc_filled_size = float(gtc_order_status.get('size_matched', 0))
+                            if gtc_filled_size > 0:
+                                # Combine FAK and GTC fills
+                                total_filled = fak_filled_size + gtc_filled_size
+                                details['filled_amount'] = total_filled
+                                details['avg_price'] = float(gtc_order_status.get('price', 0))
+                                logger.success(f"✅ GTC order partially/fully filled: {gtc_filled_size} shares")
+                                logger.success(f"📊 Total filled: {total_filled:.2f} shares (FAK: {fak_filled_size:.2f} + GTC: {gtc_filled_size:.2f})")
+                                
+                                # Return the GTC order ID (or could return both)
+                                return gtc_order_id, OrderExecutionResult.SUCCESS, details
+                        
+                        # GTC order placed but not filled yet - still return as success
+                        if fak_filled_size > 0:
+                            logger.info(f"📊 Combined order: FAK filled {fak_filled_size:.2f}, GTC pending for {size:.2f}")
+                            # Update details to show FAK fill
+                            details['filled_amount'] = fak_filled_size
+                            details['fak_order_id'] = fak_order_id
+                            details['gtc_order_id'] = gtc_order_id
+                        
+                        return gtc_order_id, OrderExecutionResult.SUCCESS, details
+                    else:
+                        logger.error("❌ GTC order placement failed")
+                        details['failure_reasons'].append("GTC fallback failed")
+                else:
+                    logger.error("❌ Cannot place GTC order: no price data available")
+                    details['failure_reasons'].append("GTC fallback: no price data")
+                    
+            except AccountRestrictedException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ GTC fallback error: {e}")
+                details['failure_reasons'].append(f"GTC fallback: {str(e)}")
+        
+        # All strategies failed
+        logger.error(f"❌ All order execution strategies failed after {details['attempts']} attempts")
+        logger.error(f"Failure reasons: {', '.join(details['failure_reasons'])}")
+        
+        return None, OrderExecutionResult.FAILED, details

@@ -32,6 +32,14 @@ class TradingConfig:
     min_target_trade_value_usd: float = 4.0   # Skip target trades below this value
     excluded_markets: list = None             # List of market IDs to exclude
     
+    # Order Execution (NEW)
+    max_order_retries: int = 1                    # Maximum retry attempts for failed orders (1 = no retries, go straight to GTC)
+    retry_delay_seconds: float = 0.5              # Delay between retries
+    price_slippage_tolerance: float = 0.02        # Price slippage tolerance for GTC orders (based on target's price)
+    use_gtc_fallback: bool = True                 # Use GTC orders if FAK fails repeatedly
+    order_timeout_seconds: int = 10               # Timeout for order execution
+    gtc_use_exact_target_price: bool = False      # If True, GTC uses exact target price (no slippage)
+    
     def __post_init__(self):
         if self.excluded_markets is None:
             self.excluded_markets = []
@@ -99,7 +107,14 @@ trading_config = TradingConfig(
     trade_delay_seconds=int(os.getenv("TRADE_DELAY_SECONDS", "0")),
     monitoring_interval_seconds=int(os.getenv("MONITORING_INTERVAL_SECONDS", "1")),
     min_market_liquidity_usd=float(os.getenv("MIN_MARKET_LIQUIDITY_USD", "1000")),
-    min_target_trade_value_usd=float(os.getenv("MIN_TARGET_TRADE_VALUE_USD", "4.0"))
+    min_target_trade_value_usd=float(os.getenv("MIN_TARGET_TRADE_VALUE_USD", "4.0")),
+    # Order execution parameters
+    max_order_retries=int(os.getenv("MAX_ORDER_RETRIES", "1")),  # 1 = try FAK once, then GTC
+    retry_delay_seconds=float(os.getenv("RETRY_DELAY_SECONDS", "0.5")),
+    price_slippage_tolerance=float(os.getenv("PRICE_SLIPPAGE_TOLERANCE", "0.07")),
+    use_gtc_fallback=os.getenv("USE_GTC_FALLBACK", "true").lower() == "true",
+    order_timeout_seconds=int(os.getenv("ORDER_TIMEOUT_SECONDS", "10")),
+    gtc_use_exact_target_price=os.getenv("GTC_USE_EXACT_TARGET_PRICE", "false").lower() == "true"
 )
 
 polymarket_config = PolymarketConfig()

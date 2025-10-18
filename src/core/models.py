@@ -7,6 +7,14 @@ from enum import Enum
 from typing import Optional, Dict, Any
 import json
 
+
+class AccountRestrictedException(Exception):
+    """Exception raised when account is in closed-only mode or restricted"""
+    def __init__(self, message: str, restriction_type: str = "closed_only"):
+        self.message = message
+        self.restriction_type = restriction_type
+        super().__init__(self.message)
+
 class TradeStatus(Enum):
     PENDING = "pending"
     EXECUTED = "executed"

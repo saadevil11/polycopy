@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 from loguru import logger
 
 from src.core.polymarket_client import PolymarketClient
-from src.core.models import TraderTrade, CopyTrade, Position, RiskMetrics, TradeSide
+from src.core.models import TraderTrade, CopyTrade, Position, RiskMetrics, TradeSide, AccountRestrictedException
 from src.core.config import trading_config
 
 
@@ -21,6 +21,7 @@ class RiskManager:
         self.current_positions: Dict[str, Position] = {}
         self.daily_pnl = 0.0
         self.last_reset_date = datetime.now().date()
+        self.account_restricted = False  # Track if account is restricted
         
         # Position cache for speed optimization
         self.position_cache_time = None
@@ -173,22 +174,36 @@ class RiskManager:
                 # Place opposite order to close position
                 opposite_side = TradeSide.SELL if position.side == TradeSide.BUY else TradeSide.BUY
                 
-                order_id = self.client.place_market_order(
-                    token_id=position.token_id,
-                    side=opposite_side,
-                    amount_usd=position.current_value_usd
-                )
-                
-                if order_id:
-                    logger.info(f"Emergency close order placed: {order_id}")
-                else:
-                    logger.error(f"Failed to place emergency close order for {position.market_id}")
+                try:
+                    order_id = self.client.place_market_order(
+                        token_id=position.token_id,
+                        side=opposite_side,
+                        amount_usd=position.current_value_usd
+                    )
                     
+                    if order_id:
+                        logger.info(f"Emergency close order placed: {order_id}")
+                    else:
+                        logger.error(f"Failed to place emergency close order for {position.market_id}")
+                        
+                except AccountRestrictedException as e:
+                    logger.critical(f"Cannot close position - account is restricted: {e.message}")
+                    self.account_restricted = True
+                    raise
+                    
+        except AccountRestrictedException:
+            # Re-raise account restrictions
+            raise
         except Exception as e:
             logger.error(f"Error in emergency close: {e}")
     
     def should_stop_trading(self) -> bool:
         """Check if trading should be stopped due to risk limits"""
+        # Stop if account is restricted
+        if self.account_restricted:
+            logger.critical("Account is restricted - stopping all trading")
+            return True
+        
         metrics = self.get_risk_metrics()
         
         # Stop if daily loss limit exceeded
