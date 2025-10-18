@@ -84,6 +84,26 @@ class Database:
             logger.error(f"Failed to initialize database: {e}")
             raise
     
+    def has_executed_trade(self, trade_id: str) -> bool:
+        """Check if a trade has already been executed"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if there's a copy trade with status EXECUTED for this trade_id
+                cursor.execute('''
+                    SELECT COUNT(*) FROM copy_trades 
+                    WHERE original_trade_id = ? 
+                    AND status IN ('EXECUTED', 'PARTIAL_FILL')
+                ''', (trade_id,))
+                
+                count = cursor.fetchone()[0]
+                return count > 0
+                
+        except Exception as e:
+            logger.error(f"Failed to check if trade executed: {e}")
+            return False  # Fail safe: allow trade if check fails
+    
     def save_target_trade(self, trade: TraderTrade) -> bool:
         """Save a target trader's trade"""
         try:

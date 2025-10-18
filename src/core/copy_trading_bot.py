@@ -192,6 +192,11 @@ class PolymarketCopyTradingBot:
             trade = trade_or_action
             logger.info(f"New trade detected from {trade.trader_address}")
             
+            # Check if we've already executed this trade
+            if self.database.has_executed_trade(trade.trade_id):
+                logger.info(f"Trade {trade.trade_id} already executed, skipping")
+                return
+            
             # Save the target trade to database
             self.database.save_target_trade(trade)
             
