@@ -309,11 +309,17 @@ class WebSocketTraderMonitor:
     async def _process_new_trade(self, trade: TraderTrade):
         """Process a new trade"""
         try:
-            # Check if we've seen this trade before
-            if trade.trade_id in self.seen_trade_ids:
+            # Extract transaction hash from trade_id (format: ws_{tx_hash}_{timestamp})
+            # We check the tx_hash to avoid processing the same transaction multiple times
+            # WebSocket can send the same transaction with different timestamps
+            tx_hash = trade.trade_id.split('_')[1] if '_' in trade.trade_id else trade.trade_id
+            
+            # Check if we've seen this transaction before
+            if tx_hash in self.seen_trade_ids:
+                logger.debug(f"Skipping duplicate transaction: {tx_hash}")
                 return
             
-            self.seen_trade_ids.add(trade.trade_id)
+            self.seen_trade_ids.add(tx_hash)
             
             logger.info(f"Processing new WebSocket trade: {trade.trade_id}")
             logger.info(f"  Market: {trade.market_info.title if trade.market_info else 'Unknown'}")
