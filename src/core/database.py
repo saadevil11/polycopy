@@ -85,16 +85,16 @@ class Database:
             raise
     
     def has_executed_trade(self, trade_id: str) -> bool:
-        """Check if a trade has already been executed"""
+        """Check if a trade has already been attempted (executed, failed, or skipped)"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                # Check if there's a copy trade with status EXECUTED for this trade_id
+                # Check if there's ANY copy trade record for this trade_id
+                # This includes EXECUTED, PARTIAL_FILL, FAILED, and SKIPPED
                 cursor.execute('''
                     SELECT COUNT(*) FROM copy_trades 
-                    WHERE original_trade_id = ? 
-                    AND status IN ('EXECUTED', 'PARTIAL_FILL')
+                    WHERE original_trade_id = ?
                 ''', (trade_id,))
                 
                 count = cursor.fetchone()[0]
