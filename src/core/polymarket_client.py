@@ -45,6 +45,10 @@ class PolymarketClient:
         self._balance_cache_time = None
         self._balance_cache_ttl = timedelta(seconds=60)  # Cache for 60 seconds
         
+        # Market info cache for speed optimization (saves 50-100ms per repeated market)
+        self._market_cache: Dict[str, Dict] = {}
+        self._market_cache_ttl = timedelta(hours=1)  # Cache for 1 hour
+        
     def initialize(self) -> bool:
         """Initialize the Polymarket client"""
         try:
@@ -126,8 +130,24 @@ class PolymarketClient:
             return []
     
     def get_market_info(self, token_id: str) -> Optional[MarketInfo]:
-        """Get market information for a token ID"""
+        """Get market information for a token ID (with caching for speed)"""
         try:
+            # Check cache first (saves 50-100ms on repeated markets)
+            if token_id in self._market_cache:
+                cached_data = self._market_cache[token_id]
+                cache_time = cached_data.get('cached_at')
+                
+                # Check if cache is still valid
+                if cache_time and datetime.now() - cache_time < self._market_cache_ttl:
+                    logger.debug(f"Market info cache hit for {token_id}")
+                    return cached_data['market_info']
+                else:
+                    # Cache expired, remove it
+                    del self._market_cache[token_id]
+            
+            # Cache miss - fetch from API
+            logger.debug(f"Market info cache miss for {token_id}, fetching...")
+            
             # Get market data from Gamma API
             response = self._session.get(
                 f"{self.config.gamma_api_url}/markets",
@@ -164,6 +184,12 @@ class PolymarketClient:
                 is_active=market_data.get('active', True),
                 end_date=datetime.fromisoformat(market_data.get('end_date_iso', '').replace('Z', '+00:00')) if market_data.get('end_date_iso') else None
             )
+            
+            # Cache the result
+            self._market_cache[token_id] = {
+                'market_info': market_info,
+                'cached_at': datetime.now()
+            }
             
             return market_info
             
