@@ -467,12 +467,11 @@ class PolymarketClient:
                             logger.success(f"✅ Order fully filled: {order_id} ({fill_percentage*100:.1f}%)")
                             return order_id, OrderExecutionResult.SUCCESS, details
                         
-                        # Any partial fill (<90%) - will use GTC for remainder
+                        # Any partial fill (<90%) - accept what we got, no GTC!
                         elif fill_percentage > 0:
                             logger.warning(f"⚠️  Partial fill: {order_id} ({fill_percentage*100:.1f}%)")
-                            logger.info(f"📊 Will place GTC for remaining {(1-fill_percentage)*100:.1f}%")
-                            # Don't return yet - will place GTC for remainder
-                            break
+                            logger.info(f"📊 Accepting partial fill (no GTC for partial fills)")
+                            break  # Exit FAK loop to handle partial fill
                         
                         else:
                             # 0% fill - completely failed
@@ -530,18 +529,13 @@ class PolymarketClient:
                             limit_price = base_price * (1 - config.price_slippage_tolerance)
                         slippage_info = f"{config.price_slippage_tolerance*100:.1f}% slippage"
                     
-                    # Calculate size from GTC amount (full or remainder)
+                    # Calculate size from GTC amount (only for 0% FAK fills)
                     size = gtc_amount / limit_price
                     
                     price_source = "target's price"
                     
-                    if fak_filled_size > 0:
-                        logger.info(f"📊 Placing GTC for remainder: {size:.2f} shares @ ${limit_price:.4f}")
-                        logger.info(f"   FAK filled: {fak_filled_size:.2f} shares ({fak_fill_percentage*100:.1f}%)")
-                        logger.info(f"   GTC for: {size:.2f} shares ({(1-fak_fill_percentage)*100:.1f}%)")
-                    else:
-                        logger.info(f"📊 Placing GTC order: {size:.2f} shares @ ${limit_price:.4f}")
-                    
+                    # Since we only reach here if fak_filled_size == 0
+                    logger.info(f"📊 Placing GTC order: {size:.2f} shares @ ${limit_price:.4f}")
                     logger.info(f"   Base price: ${base_price:.4f} ({price_source})")
                     logger.info(f"   Strategy: {slippage_info}")
                     
@@ -558,24 +552,13 @@ class PolymarketClient:
                         if gtc_order_status:
                             gtc_filled_size = float(gtc_order_status.get('size_matched', 0))
                             if gtc_filled_size > 0:
-                                # Combine FAK and GTC fills
-                                total_filled = fak_filled_size + gtc_filled_size
-                                details['filled_amount'] = total_filled
+                                details['filled_amount'] = gtc_filled_size
                                 details['avg_price'] = float(gtc_order_status.get('price', 0))
                                 logger.success(f"✅ GTC order partially/fully filled: {gtc_filled_size} shares")
-                                logger.success(f"📊 Total filled: {total_filled:.2f} shares (FAK: {fak_filled_size:.2f} + GTC: {gtc_filled_size:.2f})")
-                                
-                                # Return the GTC order ID (or could return both)
                                 return gtc_order_id, OrderExecutionResult.SUCCESS, details
                         
                         # GTC order placed but not filled yet - still return as success
-                        if fak_filled_size > 0:
-                            logger.info(f"📊 Combined order: FAK filled {fak_filled_size:.2f}, GTC pending for {size:.2f}")
-                            # Update details to show FAK fill
-                            details['filled_amount'] = fak_filled_size
-                            details['fak_order_id'] = fak_order_id
-                            details['gtc_order_id'] = gtc_order_id
-                        
+                        logger.info(f"📊 GTC order placed, waiting for fill...")
                         return gtc_order_id, OrderExecutionResult.SUCCESS, details
                     else:
                         logger.error("❌ GTC order placement failed")
