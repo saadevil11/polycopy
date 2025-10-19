@@ -262,7 +262,10 @@ class WebSocketTraderMonitor:
         """Convert WebSocket trade payload to TraderTrade"""
         try:
             # Extract trade information
-            trade_id = f"ws_{payload.get('transactionHash', '')}_{int(time.time())}"
+            # Use only transaction hash for duplicate detection (no timestamp)
+            # Timestamp would create different IDs for same transaction
+            tx_hash = payload.get('transactionHash', '')
+            trade_id = f"ws_{tx_hash}"
             
             # Determine side
             side_str = payload.get('side', 'BUY')
