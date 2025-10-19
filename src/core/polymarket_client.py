@@ -443,16 +443,22 @@ class PolymarketClient:
                         # Check fill status
                         filled_size = float(order_status.get('size_matched', 0))
                         
-                        # Calculate requested size for FAK using current market price
-                        # (FAK executes at current price due to delay, not target's price)
-                        if current_price and current_price > 0:
-                            requested_size = amount_usd / current_price
-                        elif original_price and original_price > 0:
-                            # Fallback to target's price if current price unavailable
-                            requested_size = amount_usd / original_price
+                        # Calculate requested size
+                        # For SELL: amount_usd is actually share count (not USD)
+                        # For BUY: amount_usd is USD, need to convert to shares
+                        if side == TradeSide.SELL:
+                            # For SELL, amount_usd is already the share count
+                            requested_size = amount_usd
                         else:
-                            # Last resort: use size from order status
-                            requested_size = float(order_status.get('original_size', filled_size))
+                            # For BUY, convert USD to shares using current price
+                            if current_price and current_price > 0:
+                                requested_size = amount_usd / current_price
+                            elif original_price and original_price > 0:
+                                # Fallback to target's price if current price unavailable
+                                requested_size = amount_usd / original_price
+                            else:
+                                # Last resort: use size from order status
+                                requested_size = float(order_status.get('original_size', filled_size))
                         
                         fill_percentage = (filled_size / requested_size) if requested_size > 0 else 0
                         
