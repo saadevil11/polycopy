@@ -515,30 +515,35 @@ class PolymarketClient:
             gtc_amount = amount_usd
             
             try:
-                # ALWAYS use target trader's price for GTC orders
-                # This ensures we match target's execution, not current market
-                base_price = original_price
+                # Use current market price for GTC orders (same as FAK)
+                # Market may have moved since target's execution
+                base_price = current_price if current_price and current_price > 0 else original_price
                 
                 if base_price and base_price > 0:
                     # Determine limit price based on configuration
                     if config.gtc_use_exact_target_price:
-                        # Use exact target price (no slippage)
+                        # Use exact current price (no slippage)
                         limit_price = base_price
-                        slippage_info = "exact target price (no slippage)"
+                        slippage_info = "exact current price (no slippage)"
                     else:
-                        # Calculate acceptable price with slippage FROM TARGET'S PRICE
+                        # Calculate acceptable price with slippage FROM CURRENT MARKET PRICE
                         if side == TradeSide.BUY:
-                            # For buys, willing to pay slightly more than target paid
+                            # For buys, willing to pay slightly more than current market
                             limit_price = base_price * (1 + config.price_slippage_tolerance)
                         else:
-                            # For sells, willing to accept slightly less than target got
+                            # For sells, willing to accept slightly less than current market
                             limit_price = base_price * (1 - config.price_slippage_tolerance)
                         slippage_info = f"{config.price_slippage_tolerance*100:.1f}% slippage"
                     
                     # Calculate size from GTC amount (only for 0% FAK fills)
-                    size = gtc_amount / limit_price
+                    # For SELL: gtc_amount is already share count, use directly
+                    # For BUY: gtc_amount is USD, convert to shares
+                    if side == TradeSide.SELL:
+                        size = gtc_amount  # Already in shares
+                    else:
+                        size = gtc_amount / limit_price  # Convert USD to shares
                     
-                    price_source = "target's price"
+                    price_source = "current market price" if (current_price and current_price > 0) else "target's price (fallback)"
                     
                     # Since we only reach here if fak_filled_size == 0
                     logger.info(f"📊 Placing GTC order: {size:.2f} shares @ ${limit_price:.4f}")
