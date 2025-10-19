@@ -38,7 +38,17 @@ class PolymarketClient:
         self.trading_config = trading_config
         self.bot_config = bot_config
         self._client: Optional[ClobClient] = None
+        
+        # HTTP session with connection pooling for speed
         self._session = requests.Session()
+        from requests.adapters import HTTPAdapter
+        adapter = HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=20,
+            max_retries=0
+        )
+        self._session.mount('https://', adapter)
+        self._session.mount('http://', adapter)
         
         # Balance cache for speed optimization
         self._balance_cache = None
@@ -464,9 +474,15 @@ class PolymarketClient:
                 
                 if order_id:
                     fak_order_id = order_id
-                    # Check order status immediately (no wait for speed)
-                    await asyncio.sleep(0.1)  # Minimal wait for order to register
+                    # Check order status with optimized timing and retry
+                    await asyncio.sleep(0.05)  # Fast first check (50ms)
                     order_status = self.get_order_status(order_id)
+                    
+                    # Retry once if not found (handles slow registration)
+                    if not order_status:
+                        logger.debug(f"Order status not ready, retrying...")
+                        await asyncio.sleep(0.05)  # Wait another 50ms
+                        order_status = self.get_order_status(order_id)
                     
                     if order_status:
                         # Check fill status
