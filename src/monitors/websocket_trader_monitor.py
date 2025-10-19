@@ -315,12 +315,10 @@ class WebSocketTraderMonitor:
             
             self.seen_trade_ids.add(trade.trade_id)
             
-            logger.info(f"Processing new WebSocket trade: {trade.trade_id}")
-            logger.info(f"  Market: {trade.market_info.title if trade.market_info else 'Unknown'}")
-            logger.info(f"  Side: {trade.side.value}")
-            logger.info(f"  Size: {trade.size}")
-            logger.info(f"  Price: {trade.price}")
-            logger.info(f"  Amount: ${trade.amount_usd:.2f}")
+            # 3-line format for clarity
+            market_title = trade.market_info.title if trade.market_info else "Unknown Market"
+            logger.info(f"📊 Market: {market_title}")
+            logger.info(f"   Target: {trade.side.value} {trade.size:.2f} shares @ ${trade.price:.2f} = ${trade.amount_usd:.2f}")
             
             # Apply delay
             if self.config.trade_delay_seconds > 0:

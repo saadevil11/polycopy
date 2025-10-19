@@ -5,7 +5,7 @@ import asyncio
 import signal
 import sys
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Set
 from loguru import logger
 
 from src.core.config import bot_config, trading_config, polymarket_config
@@ -48,6 +48,9 @@ class PolymarketCopyTradingBot:
         self.successful_trades = 0
         self.failed_trades = 0
         self.errors = []
+        
+        # In-memory cache for executed trades (speed optimization)
+        self.executed_trades_cache: Set[str] = set()
         
     async def initialize(self) -> bool:
         """Initialize the bot"""
@@ -192,13 +195,22 @@ class PolymarketCopyTradingBot:
             trade = trade_or_action
             logger.info(f"New trade detected from {trade.trader_address}")
             
-            # Check if we've already executed this trade
-            if self.database.has_executed_trade(trade.trade_id):
-                logger.info(f"Trade {trade.trade_id} already executed, skipping")
+            # Check if we've already executed this trade (in-memory cache first for speed)
+            if trade.trade_id in self.executed_trades_cache:
+                logger.debug(f"Trade {trade.trade_id} in cache, skipping")
                 return
             
-            # Save the target trade to database
-            self.database.save_target_trade(trade)
+            # Double-check database (in case bot restarted)
+            if self.database.has_executed_trade(trade.trade_id):
+                logger.info(f"Trade {trade.trade_id} already executed, skipping")
+                self.executed_trades_cache.add(trade.trade_id)  # Add to cache
+                return
+            
+            # Mark as being processed
+            self.executed_trades_cache.add(trade.trade_id)
+            
+            # Save the target trade to database (non-blocking)
+            asyncio.create_task(asyncio.to_thread(self.database.save_target_trade, trade))
             
             # Check if we should stop trading due to risk limits
             if self.risk_manager.should_stop_trading():

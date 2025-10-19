@@ -401,25 +401,28 @@ class PolymarketClient:
             'failure_reasons': []
         }
         
-        logger.info(f"🎯 Starting enhanced order execution: {side.value} ${amount_usd:.2f}")
+        logger.debug(f"🎯 Order execution: {side.value} ${amount_usd:.2f}")
         
         # Get current market price for FAK fill percentage calculation
-        # FAK executes at current market price (not target's price due to delay)
+        # Can be skipped for maximum speed (uses target's price instead)
         current_price = None
-        try:
-            midpoint_data = self.client.get_midpoint(token_id)
-            # get_midpoint returns a dict with 'mid' key
-            if isinstance(midpoint_data, dict):
-                current_price = float(midpoint_data.get('mid', 0))
-            elif isinstance(midpoint_data, (int, float)):
-                current_price = float(midpoint_data)
-            
-            if current_price and current_price > 0:
-                logger.debug(f"Current market price: ${current_price:.4f}")
-            else:
-                current_price = None
-        except Exception as e:
-            logger.debug(f"Could not get current price (will use target's price): {e}")
+        if not config.skip_price_fetch_for_speed:
+            try:
+                midpoint_data = self.client.get_midpoint(token_id)
+                # get_midpoint returns a dict with 'mid' key
+                if isinstance(midpoint_data, dict):
+                    current_price = float(midpoint_data.get('mid', 0))
+                elif isinstance(midpoint_data, (int, float)):
+                    current_price = float(midpoint_data)
+                
+                if current_price and current_price > 0:
+                    logger.debug(f"Current market price: ${current_price:.4f}")
+                else:
+                    current_price = None
+            except Exception as e:
+                logger.debug(f"Could not get current price (will use target's price): {e}")
+        else:
+            logger.debug("Skipping price fetch for maximum speed (using target's price)")
         
         # Strategy 1: Try FAK orders with retries
         fak_order_id = None
@@ -428,15 +431,15 @@ class PolymarketClient:
         
         for attempt in range(config.max_order_retries):
             details['attempts'] = attempt + 1
-            logger.info(f"📤 Attempt {attempt + 1}/{config.max_order_retries}: Placing FAK order...")
+            logger.debug(f"📤 FAK attempt {attempt + 1}/{config.max_order_retries}")
             
             try:
                 order_id = self.place_market_order(token_id, side, amount_usd)
                 
                 if order_id:
                     fak_order_id = order_id
-                    # Wait briefly and check order status
-                    await asyncio.sleep(1)
+                    # Check order status immediately (no wait for speed)
+                    await asyncio.sleep(0.1)  # Minimal wait for order to register
                     order_status = self.get_order_status(order_id)
                     
                     if order_status:
@@ -556,8 +559,8 @@ class PolymarketClient:
                         logger.success(f"✅ GTC order placed: {gtc_order_id}")
                         logger.info(f"⏰ Order will remain active until filled or cancelled")
                         
-                        # Wait a bit to see if it fills quickly
-                        await asyncio.sleep(3)
+                        # Quick check if it fills immediately
+                        await asyncio.sleep(0.5)
                         gtc_order_status = self.get_order_status(gtc_order_id)
                         
                         if gtc_order_status:

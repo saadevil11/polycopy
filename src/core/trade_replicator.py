@@ -145,10 +145,9 @@ class TradeReplicator:
     async def _execute_trade(self, copy_trade: CopyTrade) -> CopyTrade:
         """Execute the actual trade with enhanced retry logic"""
         try:
-            logger.info(f"🚀 Executing copy trade for {copy_trade.original_trade.trade_id}")
-            logger.info(f"   Side: {copy_trade.original_trade.side.value}")
-            logger.info(f"   Amount: ${copy_trade.copy_amount_usd:.2f}")
-            logger.info(f"   Token: {copy_trade.original_trade.token_id}")
+            # Calculate copy percentage
+            copy_pct = (copy_trade.copy_size / copy_trade.original_trade.size * 100) if copy_trade.original_trade.size > 0 else 0
+            logger.info(f"   You ({copy_pct:.1f}%): {copy_trade.original_trade.side.value} {copy_trade.copy_size:.2f} shares = ${copy_trade.copy_amount_usd:.2f}")
             
             # Determine amount to use (shares for SELL, USD for BUY)
             if copy_trade.original_trade.side == TradeSide.SELL:
