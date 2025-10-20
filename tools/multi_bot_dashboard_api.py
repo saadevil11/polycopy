@@ -54,7 +54,12 @@ def fetch_bot_data(bot_config: Dict[str, Any]) -> Dict[str, Any]:
         "description": bot_config.get('description', ''),
         "color": bot_config.get('color', '#007bff'),
         "connected": False,
-        "error": None
+        "error": None,
+        "status": {},
+        "trades": [],
+        "positions": [],
+        "metrics": {},
+        "config": {}
     }
     
     try:
