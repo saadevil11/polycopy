@@ -19,6 +19,7 @@ from src.core.risk_manager import RiskManager
 from src.core.database import Database
 from src.core.merge_positions import PositionMerger
 from src.core.polymarket_redeem import PolymarketRedeemer
+from src.core.api import BotAPI
 
 
 class PolymarketCopyTradingBot:
@@ -42,6 +43,9 @@ class PolymarketCopyTradingBot:
         
         # Use WebSocket monitoring for real-time trade detection
         self.trader_monitor = WebSocketTraderMonitor()
+        
+        # API server for monitoring (optional)
+        self.api_server = None
         
         # Statistics
         self.trades_copied_today = 0
@@ -79,6 +83,25 @@ class PolymarketCopyTradingBot:
                     self.auto_redeemer = None
             else:
                 logger.info("Auto-claiming disabled")
+            
+            # Initialize API server if API_PORT is set
+            import os
+            api_port = os.getenv("API_PORT")
+            if api_port:
+                try:
+                    self.api_server = BotAPI(
+                        bot_instance=self,
+                        database=self.database,
+                        risk_manager=self.risk_manager,
+                        port=int(api_port)
+                    )
+                    self.api_server.start()
+                    logger.success(f"✅ API server enabled on port {api_port}")
+                except Exception as e:
+                    logger.warning(f"Failed to start API server: {e}")
+                    self.api_server = None
+            else:
+                logger.debug("API server disabled (API_PORT not set)")
             
             # Set up trader monitor callbacks
             self.trader_monitor.add_new_trade_callback(self._on_new_trade)

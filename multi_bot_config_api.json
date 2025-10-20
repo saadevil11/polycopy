@@ -1,0 +1,27 @@
+{
+  "bots": [
+    {
+      "name": "BTC Bot",
+      "api_url": "https://btc-bot-production.up.railway.app",
+      "description": "BTC copy trading bot",
+      "color": "#007bff"
+    },
+    {
+      "name": "XRP Bot",
+      "api_url": "https://xrp-bot-production.up.railway.app",
+      "description": "XRP copy trading bot",
+      "color": "#28a745"
+    }
+  ],
+  "dashboard": {
+    "port": 8080,
+    "auto_refresh_seconds": 30
+  },
+  "notes": {
+    "deployment": "API-based dashboard for Railway",
+    "setup": "1. Set API_PORT=8081 on each bot service",
+    "setup2": "2. Update api_url above with your Railway service URLs",
+    "setup3": "3. Deploy this dashboard as a separate Railway service"
+  }
+}
+
