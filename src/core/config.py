@@ -31,6 +31,7 @@ class TradingConfig:
     min_market_liquidity_usd: float = 1000.0  # Only trade markets with minimum liquidity
     min_target_trade_value_usd: float = 4.0   # Skip target trades below this value
     excluded_markets: list = None             # List of market IDs to exclude
+    allow_15min_markets: bool = False         # Allow trading on 15-minute interval markets (high risk!)
     
     # Order Execution (NEW)
     max_order_retries: int = 1                    # Maximum retry attempts for failed orders (1 = no retries, go straight to GTC)
@@ -109,6 +110,7 @@ trading_config = TradingConfig(
     monitoring_interval_seconds=int(os.getenv("MONITORING_INTERVAL_SECONDS", "1")),
     min_market_liquidity_usd=float(os.getenv("MIN_MARKET_LIQUIDITY_USD", "1000")),
     min_target_trade_value_usd=float(os.getenv("MIN_TARGET_TRADE_VALUE_USD", "4.0")),
+    allow_15min_markets=os.getenv("ALLOW_15MIN_MARKETS", "false").lower() == "true",
     # Order execution parameters
     max_order_retries=int(os.getenv("MAX_ORDER_RETRIES", "1")),  # 1 = try FAK once, then GTC
     retry_delay_seconds=float(os.getenv("RETRY_DELAY_SECONDS", "0.5")),

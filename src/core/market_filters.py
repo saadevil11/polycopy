@@ -34,6 +34,11 @@ class MarketFilter:
             # MARKET_FILTERS has values - use them
             self.enabled_patterns = [p.strip() for p in env_filters.split(",") if p.strip()]
             logger.info(f"Loaded filters from environment: {self.enabled_patterns}")
+        
+        # Load 15-minute market setting
+        self.allow_15min_markets = os.getenv("ALLOW_15MIN_MARKETS", "false").lower() == "true"
+        if self.allow_15min_markets:
+            logger.warning("⚠️  15-minute markets ENABLED - high risk of slippage!")
     
     def load_default_patterns(self):
         """Load default market patterns"""
@@ -59,8 +64,8 @@ class MarketFilter:
         for pattern in self.enabled_patterns:
             pattern_lower = pattern.lower()
             if pattern_lower in market_title_lower:
-                # Additional check: Exclude 15-minute markets
-                if self._is_fifteen_minute_market(market_title):
+                # Additional check: Exclude 15-minute markets (unless explicitly allowed)
+                if not self.allow_15min_markets and self._is_fifteen_minute_market(market_title):
                     logger.debug(f"❌ Skipping 15-minute market: {market_title}")
                     return False
                 
