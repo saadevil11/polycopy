@@ -1,8 +1,8 @@
 {
   "bots": [
     {
-      "name": "Primary Bot",
-      "api_url": "http://ticket.railway.internal:8081",
+      "name": "btc",
+      "api_url": "http://btc.railway.internal:8081",
       "description": "Main copy trading bot",
       "color": "#007bff"
     }
