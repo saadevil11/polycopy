@@ -191,7 +191,12 @@ class BotAPI:
                 
                 # Total portfolio = cash + open positions + claimable winnings
                 total_portfolio = cash_balance + position_value + claimable_winnings
-                logger.info(f"Portfolio: Cash=${cash_balance}, Positions=${position_value}, Claimable=${claimable_winnings}, Total=${total_portfolio}")
+                
+                # Only log portfolio breakdown when balance is freshly fetched
+                if self._balance_cache_time and (current_time - self._balance_cache_time) < 5:
+                    logger.info(f"💰 Portfolio: Cash=${cash_balance:.2f}, Positions=${position_value:.2f}, Claimable=${claimable_winnings:.2f}, Total=${total_portfolio:.2f}")
+                else:
+                    logger.debug(f"Portfolio (cached): Total=${total_portfolio:.2f}")
                 
                 metrics_data = {
                     "daily_pnl": float(metrics.daily_pnl_usd) if hasattr(metrics, 'daily_pnl_usd') and metrics.daily_pnl_usd else 0,
