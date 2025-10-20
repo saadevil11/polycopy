@@ -136,24 +136,45 @@ class BotAPI:
             try:
                 metrics = self.risk_manager.get_risk_metrics()
                 
-                # Get balance from bot's polymarket_client
-                balance = 0
+                # Get cash balance and calculate total portfolio value
+                cash_balance = 0
+                position_value = 0
                 try:
                     if self.bot and hasattr(self.bot, 'polymarket_client'):
                         balance_data = self.bot.polymarket_client.get_account_balance()
-                        balance = float(balance_data) if balance_data else 0
-                        logger.info(f"API fetched balance: ${balance}")
+                        cash_balance = float(balance_data) if balance_data else 0
+                        logger.info(f"API fetched cash balance: ${cash_balance}")
                     else:
                         logger.warning("Bot or polymarket_client not available in API")
                 except Exception as e:
                     logger.error(f"Failed to fetch balance in API: {e}")
                     pass
                 
+                # Get position value from metrics
+                position_value = float(metrics.total_position_value_usd) if hasattr(metrics, 'total_position_value_usd') and metrics.total_position_value_usd else 0
+                
+                # Get claimable winnings (resolved but not redeemed)
+                claimable_winnings = 0
+                try:
+                    # Try to get claimable amount from bot's auto_redeemer
+                    if self.bot and hasattr(self.bot, 'auto_redeemer') and self.bot.auto_redeemer:
+                        # For now, we'll estimate this from resolved positions
+                        # A proper implementation would check on-chain claimable balance
+                        # This is a placeholder - claimable winnings would need blockchain query
+                        logger.debug("Claimable winnings check not yet implemented")
+                except Exception as e:
+                    logger.debug(f"Could not fetch claimable winnings: {e}")
+                
+                # Total portfolio = cash + open positions + claimable winnings
+                total_portfolio = cash_balance + position_value + claimable_winnings
+                logger.info(f"Portfolio: Cash=${cash_balance}, Positions=${position_value}, Claimable=${claimable_winnings}, Total=${total_portfolio}")
+                
                 metrics_data = {
                     "daily_pnl": float(metrics.daily_pnl_usd) if hasattr(metrics, 'daily_pnl_usd') and metrics.daily_pnl_usd else 0,
                     "total_positions": metrics.total_positions if hasattr(metrics, 'total_positions') else 0,
-                    "total_position_value": float(metrics.total_position_value_usd) if hasattr(metrics, 'total_position_value_usd') and metrics.total_position_value_usd else 0,
-                    "balance": balance,
+                    "total_position_value": position_value,
+                    "balance": total_portfolio,  # Total portfolio value (cash + positions)
+                    "cash_balance": cash_balance,  # Available cash only
                     "trades_today": len(metrics.daily_trades) if hasattr(metrics, 'daily_trades') and metrics.daily_trades else 0,
                     "max_daily_loss": float(metrics.max_daily_loss_usd) if hasattr(metrics, 'max_daily_loss_usd') and metrics.max_daily_loss_usd else 0,
                     "max_positions": metrics.max_positions if hasattr(metrics, 'max_positions') else 0,
