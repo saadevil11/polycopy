@@ -65,20 +65,22 @@ class BotAPI:
                 limit = request.args.get('limit', 20, type=int)
                 limit = min(limit, 100)  # Cap at 100
                 
-                trades = self.database.get_recent_copy_trades(limit=limit)
+                # Use get_copy_trades_today instead
+                trades = self.database.get_copy_trades_today()[:limit]
                 
                 trades_data = []
                 for trade in trades:
+                    # trade is already a dictionary from SQL
                     trades_data.append({
-                        "trade_id": trade.trade_id,
-                        "original_trade_id": trade.original_trade_id,
-                        "timestamp": trade.timestamp.isoformat() if trade.timestamp else None,
-                        "side": trade.side.value if trade.side else None,
-                        "token_id": trade.token_id,
-                        "copy_amount_usd": float(trade.copy_amount_usd) if trade.copy_amount_usd else 0,
-                        "copy_size": float(trade.copy_size) if trade.copy_size else 0,
-                        "status": trade.status.value if trade.status else None,
-                        "market_title": trade.original_trade.market_info.title if trade.original_trade and trade.original_trade.market_info else "Unknown"
+                        "trade_id": trade.get('trade_id'),
+                        "original_trade_id": trade.get('original_trade_id'),
+                        "timestamp": trade.get('created_at'),
+                        "side": trade.get('side'),
+                        "token_id": trade.get('token_id'),
+                        "copy_amount_usd": float(trade.get('copy_amount_usd', 0)),
+                        "copy_size": float(trade.get('copy_size', 0)),
+                        "status": trade.get('status'),
+                        "market_title": trade.get('market_title', 'Unknown')
                     })
                 
                 return jsonify({
@@ -98,20 +100,21 @@ class BotAPI:
         def get_positions():
             """Get current open positions"""
             try:
-                positions = self.database.get_open_positions()
+                # Get positions from risk manager's current positions
+                positions = self.risk_manager.current_positions if hasattr(self.risk_manager, 'current_positions') else []
                 
                 positions_data = []
                 for pos in positions:
                     positions_data.append({
-                        "token_id": pos.token_id,
-                        "market_title": pos.market_title,
-                        "side": pos.side.value if pos.side else None,
-                        "size": float(pos.size) if pos.size else 0,
-                        "avg_price": float(pos.avg_price) if pos.avg_price else 0,
-                        "current_price": float(pos.current_price) if pos.current_price else 0,
-                        "unrealized_pnl": float(pos.unrealized_pnl) if pos.unrealized_pnl else 0,
-                        "cost_basis": float(pos.cost_basis) if pos.cost_basis else 0,
-                        "current_value": float(pos.current_value) if pos.current_value else 0
+                        "token_id": pos.token_id if hasattr(pos, 'token_id') else None,
+                        "market_title": pos.market_title if hasattr(pos, 'market_title') else "Unknown",
+                        "side": pos.side.value if hasattr(pos, 'side') and pos.side else None,
+                        "size": float(pos.size) if hasattr(pos, 'size') and pos.size else 0,
+                        "avg_price": float(pos.avg_price) if hasattr(pos, 'avg_price') and pos.avg_price else 0,
+                        "current_price": float(pos.current_price) if hasattr(pos, 'current_price') and pos.current_price else 0,
+                        "unrealized_pnl": float(pos.unrealized_pnl) if hasattr(pos, 'unrealized_pnl') and pos.unrealized_pnl else 0,
+                        "cost_basis": float(pos.cost_basis) if hasattr(pos, 'cost_basis') and pos.cost_basis else 0,
+                        "current_value": float(pos.current_value) if hasattr(pos, 'current_value') and pos.current_value else 0
                     })
                 
                 return jsonify({
@@ -133,14 +136,22 @@ class BotAPI:
             try:
                 metrics = self.risk_manager.get_risk_metrics()
                 
+                # Get balance separately from polymarket_client
+                balance = 0
+                try:
+                    balance_data = self.risk_manager.polymarket_client.get_account_balance()
+                    balance = float(balance_data) if balance_data else 0
+                except:
+                    pass
+                
                 metrics_data = {
-                    "daily_pnl": float(metrics.daily_pnl_usd) if metrics.daily_pnl_usd else 0,
-                    "total_positions": metrics.total_positions,
-                    "total_position_value": float(metrics.total_position_value_usd) if metrics.total_position_value_usd else 0,
-                    "balance": float(metrics.current_balance_usd) if metrics.current_balance_usd else 0,
-                    "trades_today": len(metrics.daily_trades) if metrics.daily_trades else 0,
-                    "max_daily_loss": float(metrics.max_daily_loss_usd) if metrics.max_daily_loss_usd else 0,
-                    "max_positions": metrics.max_positions,
+                    "daily_pnl": float(metrics.daily_pnl_usd) if hasattr(metrics, 'daily_pnl_usd') and metrics.daily_pnl_usd else 0,
+                    "total_positions": metrics.total_positions if hasattr(metrics, 'total_positions') else 0,
+                    "total_position_value": float(metrics.total_position_value_usd) if hasattr(metrics, 'total_position_value_usd') and metrics.total_position_value_usd else 0,
+                    "balance": balance,
+                    "trades_today": len(metrics.daily_trades) if hasattr(metrics, 'daily_trades') and metrics.daily_trades else 0,
+                    "max_daily_loss": float(metrics.max_daily_loss_usd) if hasattr(metrics, 'max_daily_loss_usd') and metrics.max_daily_loss_usd else 0,
+                    "max_positions": metrics.max_positions if hasattr(metrics, 'max_positions') else 0,
                     "risk_level": "normal"  # Can add logic to determine risk level
                 }
                 
