@@ -141,7 +141,9 @@ class BotAPI:
                 try:
                     balance_data = self.risk_manager.polymarket_client.get_account_balance()
                     balance = float(balance_data) if balance_data else 0
-                except:
+                    logger.info(f"API fetched balance: ${balance}")
+                except Exception as e:
+                    logger.error(f"Failed to fetch balance in API: {e}")
                     pass
                 
                 metrics_data = {
@@ -182,9 +184,17 @@ class BotAPI:
             try:
                 from src.core.config import trading_config
                 
+                # copy_percentage is stored as decimal (0.1 = 10%), multiply by 100 for display
+                copy_pct = trading_config.copy_percentage
+                # If it's already >= 1, it's likely already in percentage form (wrong config)
+                if copy_pct >= 1:
+                    copy_pct_display = copy_pct  # Already a percentage
+                else:
+                    copy_pct_display = copy_pct * 100  # Convert decimal to percentage
+                
                 config_data = {
                     "target_trader": trading_config.target_trader_address[:10] + "..." if trading_config.target_trader_address else "N/A",
-                    "copy_percentage": trading_config.copy_percentage * 100,  # Convert to percentage
+                    "copy_percentage": copy_pct_display,
                     "max_position_size": float(trading_config.max_position_size_usd),
                     "min_position_size": float(trading_config.min_position_size_usd),
                     "max_daily_loss": float(trading_config.max_daily_loss_usd),
@@ -192,6 +202,8 @@ class BotAPI:
                     "min_market_liquidity": float(trading_config.min_market_liquidity_usd),
                     "min_target_trade_value": float(trading_config.min_target_trade_value_usd)
                 }
+                
+                logger.debug(f"Config API: copy_percentage raw={copy_pct}, display={copy_pct_display}")
                 
                 return jsonify({
                     "success": True,
