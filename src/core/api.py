@@ -30,6 +30,11 @@ class BotAPI:
         self._setup_routes()
         self._server_thread = None
         
+        # Cache for balance (refresh every 5 minutes)
+        self._balance_cache = None
+        self._balance_cache_time = None
+        self._balance_cache_ttl = 300  # 5 minutes in seconds
+        
     def _setup_routes(self):
         """Setup API endpoints"""
         
@@ -136,18 +141,37 @@ class BotAPI:
             try:
                 metrics = self.risk_manager.get_risk_metrics()
                 
-                # Get cash balance and calculate total portfolio value
+                # Get cash balance with caching (5 min TTL)
                 cash_balance = 0
                 position_value = 0
                 try:
-                    if self.bot and hasattr(self.bot, 'polymarket_client'):
-                        balance_data = self.bot.polymarket_client.get_account_balance()
-                        cash_balance = float(balance_data) if balance_data else 0
-                        logger.info(f"API fetched cash balance: ${cash_balance}")
+                    import time
+                    current_time = time.time()
+                    
+                    # Check if cache is valid
+                    if (self._balance_cache is not None and 
+                        self._balance_cache_time is not None and 
+                        (current_time - self._balance_cache_time) < self._balance_cache_ttl):
+                        # Use cached balance
+                        cash_balance = self._balance_cache
+                        logger.debug(f"API using cached balance: ${cash_balance:.2f}")
                     else:
-                        logger.warning("Bot or polymarket_client not available in API")
+                        # Fetch fresh balance
+                        if self.bot and hasattr(self.bot, 'polymarket_client'):
+                            balance_data = self.bot.polymarket_client.get_account_balance()
+                            cash_balance = float(balance_data) if balance_data else 0
+                            # Update cache
+                            self._balance_cache = cash_balance
+                            self._balance_cache_time = current_time
+                            logger.info(f"API fetched fresh balance: ${cash_balance:.2f} (cached for 5 min)")
+                        else:
+                            logger.warning("Bot or polymarket_client not available in API")
                 except Exception as e:
                     logger.error(f"Failed to fetch balance in API: {e}")
+                    # If fetch fails but we have cache, use it anyway
+                    if self._balance_cache is not None:
+                        cash_balance = self._balance_cache
+                        logger.warning(f"Using stale cached balance: ${cash_balance:.2f}")
                     pass
                 
                 # Get position value from metrics
