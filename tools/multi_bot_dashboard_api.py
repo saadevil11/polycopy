@@ -260,43 +260,43 @@ DASHBOARD_HTML = """
                 <!-- Bot Status & Metrics -->
                 <div class="row mb-3">
                     <div class="col-md-3">
-                        <strong>Status:</strong> {{ 'Running' if bot.status.running else 'Stopped' }}<br>
-                        <strong>Uptime:</strong> {{ (bot.status.uptime_seconds / 3600) | round(1) }}h<br>
-                        <strong>Trades Today:</strong> {{ bot.metrics.trades_today or 0 }}
+                        <strong>Status:</strong> {{ 'Running' if bot.get('status', {}).get('running') else 'Stopped' }}<br>
+                        <strong>Uptime:</strong> {{ (bot.get('status', {}).get('uptime_seconds', 0) / 3600) | round(1) }}h<br>
+                        <strong>Trades Today:</strong> {{ bot.get('metrics', {}).get('trades_today', 0) }}
                     </div>
                     <div class="col-md-3">
-                        <strong>Balance:</strong> ${{ "%.2f"|format(bot.metrics.balance or 0) }}<br>
+                        <strong>Balance:</strong> ${{ "%.2f"|format(bot.get('metrics', {}).get('balance', 0)) }}<br>
                         <strong>Daily P&L:</strong> 
-                        <span class="{% if bot.metrics.daily_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                            ${{ "%.2f"|format(bot.metrics.daily_pnl or 0) }}
+                        <span class="{% if bot.get('metrics', {}).get('daily_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
+                            ${{ "%.2f"|format(bot.get('metrics', {}).get('daily_pnl', 0)) }}
                         </span><br>
-                        <strong>Success Rate:</strong> {{ "%.1f"|format(bot.metrics.success_rate or 0) }}%
+                        <strong>Success Rate:</strong> {{ "%.1f"|format(bot.get('metrics', {}).get('success_rate', 0)) }}%
                     </div>
                     <div class="col-md-3">
-                        <strong>Positions:</strong> {{ bot.metrics.total_positions or 0 }}<br>
-                        <strong>Position Value:</strong> ${{ "%.2f"|format(bot.metrics.total_position_value or 0) }}<br>
-                        <strong>Copy %:</strong> {{ (bot.config.copy_percentage * 100) | round(1) }}%
+                        <strong>Positions:</strong> {{ bot.get('metrics', {}).get('total_positions', 0) }}<br>
+                        <strong>Position Value:</strong> ${{ "%.2f"|format(bot.get('metrics', {}).get('total_position_value', 0)) }}<br>
+                        <strong>Copy %:</strong> {{ (bot.get('config', {}).get('copy_percentage', 0) * 100) | round(1) }}%
                     </div>
                     <div class="col-md-3">
-                        <strong>Target:</strong> {{ bot.config.target_trader[:10] }}...<br>
-                        <strong>Max Loss:</strong> ${{ "%.0f"|format(bot.config.max_daily_loss or 0) }}<br>
-                        <strong>Mode:</strong> {{ 'DRY RUN' if bot.status.get('configuration', {}).get('dry_run') else 'LIVE' }}
+                        <strong>Target:</strong> {{ (bot.get('config', {}).get('target_trader', 'N/A'))[:10] }}...<br>
+                        <strong>Max Loss:</strong> ${{ "%.0f"|format(bot.get('config', {}).get('max_daily_loss', 0)) }}<br>
+                        <strong>Mode:</strong> {{ 'DRY RUN' if bot.get('status', {}).get('configuration', {}).get('dry_run') else 'LIVE' }}
                     </div>
                 </div>
 
                 <!-- Open Positions -->
-                {% if bot.positions %}
-                <h6>Open Positions ({{ bot.positions | length }})</h6>
+                {% if bot.get('positions') %}
+                <h6>Open Positions ({{ bot.get('positions', []) | length }})</h6>
                 <div class="row">
-                    {% for pos in bot.positions[:5] %}
+                    {% for pos in bot.get('positions', [])[:5] %}
                     <div class="col-md-6">
                         <div class="position-item">
-                            <strong>{{ pos.market_title[:50] }}...</strong><br>
+                            <strong>{{ pos.get('market_title', 'Unknown')[:50] }}...</strong><br>
                             <small>
-                                {{ pos.side }} {{ "%.2f"|format(pos.size) }} @ ${{ "%.2f"|format(pos.avg_price) }}
-                                → ${{ "%.2f"|format(pos.current_price) }}
-                                <span class="{% if pos.unrealized_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                                    (${{ "%.2f"|format(pos.unrealized_pnl) }})
+                                {{ pos.get('side', 'N/A') }} {{ "%.2f"|format(pos.get('size', 0)) }} @ ${{ "%.2f"|format(pos.get('avg_price', 0)) }}
+                                → ${{ "%.2f"|format(pos.get('current_price', 0)) }}
+                                <span class="{% if pos.get('unrealized_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
+                                    (${{ "%.2f"|format(pos.get('unrealized_pnl', 0)) }})
                                 </span>
                             </small>
                         </div>
@@ -308,19 +308,19 @@ DASHBOARD_HTML = """
                 {% endif %}
 
                 <!-- Recent Trades -->
-                {% if bot.trades %}
-                <h6 class="mt-3">Recent Trades ({{ bot.trades | length }})</h6>
+                {% if bot.get('trades') %}
+                <h6 class="mt-3">Recent Trades ({{ bot.get('trades', []) | length }})</h6>
                 <div style="max-height: 300px; overflow-y: auto;">
-                    {% for trade in bot.trades[:10] %}
+                    {% for trade in bot.get('trades', [])[:10] %}
                     <div class="trade-item">
-                        <strong>{{ trade.market_title[:60] }}</strong><br>
+                        <strong>{{ trade.get('market_title', 'Unknown')[:60] }}</strong><br>
                         <small>
-                            {{ trade.side }} {{ "%.2f"|format(trade.copy_size) }} shares 
-                            (${{ "%.2f"|format(trade.copy_amount_usd) }})
-                            - <span class="badge bg-{{ 'success' if trade.status == 'EXECUTED' else 'warning' if trade.status == 'PARTIAL_FILL' else 'danger' }}">
-                                {{ trade.status }}
+                            {{ trade.get('side', 'N/A') }} {{ "%.2f"|format(trade.get('copy_size', 0)) }} shares 
+                            (${{ "%.2f"|format(trade.get('copy_amount_usd', 0)) }})
+                            - <span class="badge bg-{{ 'success' if trade.get('status') == 'EXECUTED' else 'warning' if trade.get('status') == 'PARTIAL_FILL' else 'danger' }}">
+                                {{ trade.get('status', 'UNKNOWN') }}
                             </span>
-                            <span class="timestamp">{{ trade.timestamp[:19] if trade.timestamp else 'N/A' }}</span>
+                            <span class="timestamp">{{ (trade.get('timestamp', 'N/A'))[:19] if trade.get('timestamp') else 'N/A' }}</span>
                         </small>
                     </div>
                     {% endfor %}
