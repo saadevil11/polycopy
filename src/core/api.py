@@ -136,12 +136,15 @@ class BotAPI:
             try:
                 metrics = self.risk_manager.get_risk_metrics()
                 
-                # Get balance separately from polymarket_client
+                # Get balance from bot's polymarket_client
                 balance = 0
                 try:
-                    balance_data = self.risk_manager.polymarket_client.get_account_balance()
-                    balance = float(balance_data) if balance_data else 0
-                    logger.info(f"API fetched balance: ${balance}")
+                    if self.bot and hasattr(self.bot, 'polymarket_client'):
+                        balance_data = self.bot.polymarket_client.get_account_balance()
+                        balance = float(balance_data) if balance_data else 0
+                        logger.info(f"API fetched balance: ${balance}")
+                    else:
+                        logger.warning("Bot or polymarket_client not available in API")
                 except Exception as e:
                     logger.error(f"Failed to fetch balance in API: {e}")
                     pass
