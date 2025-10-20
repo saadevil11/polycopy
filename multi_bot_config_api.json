@@ -2,7 +2,7 @@
   "bots": [
     {
       "name": "btc1",
-      "api_url": "http://btc1.railway.internal:8081",
+      "api_url": "https://btc1.up.railway.app",
       "description": "Main copy trading bot",
       "color": "#007bff"
     }
