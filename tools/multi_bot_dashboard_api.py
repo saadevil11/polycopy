@@ -208,216 +208,813 @@ DASHBOARD_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Bot Dashboard (API)</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>Polymarket Copy Trading - Enterprise Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-        body { background-color: #0a0e27; color: #fff; padding: 20px; }
-        .card { background-color: #1a1f3a; border: 1px solid #2a2f4a; margin-bottom: 20px; }
-        .card-header { border-bottom: 1px solid #2a2f4a; }
-        .metric-card { padding: 15px; border-radius: 8px; margin-bottom: 15px; }
-        .positive { color: #28a745; }
-        .negative { color: #dc3545; }
-        .status-badge { padding: 5px 10px; border-radius: 5px; font-size: 0.85em; }
-        .status-connected { background-color: #28a745; }
-        .status-disconnected { background-color: #dc3545; }
-        .trade-item { padding: 10px; border-bottom: 1px solid #2a2f4a; }
-        .trade-item:last-child { border-bottom: none; }
-        .position-item { padding: 10px; border-radius: 5px; margin-bottom: 10px; background-color: #252a45; }
-        .bot-header { border-left: 4px solid; padding-left: 15px; }
-        .timestamp { color: #6c757d; font-size: 0.85em; }
-        #last-update { position: fixed; top: 20px; right: 20px; background: #1a1f3a; padding: 10px; border-radius: 5px; }
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #12172a;
+            --bg-card: #1a1f35;
+            --bg-card-hover: #1f2540;
+            --border-color: rgba(99, 102, 241, 0.1);
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --accent-blue: #6366f1;
+            --accent-purple: #8b5cf6;
+            --accent-cyan: #06b6d4;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-orange: #f97316;
+            --glow-blue: rgba(99, 102, 241, 0.3);
+            --glow-purple: rgba(139, 92, 246, 0.3);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, var(--bg-primary) 0%, #0f1420 50%, var(--bg-primary) 100%);
+            color: var(--text-primary);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        
+        /* Animated background gradient */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(99, 102, 241, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 40% 80%, rgba(6, 182, 212, 0.05) 0%, transparent 50%);
+            animation: bgShift 20s ease-in-out infinite;
+            z-index: -1;
+        }
+        
+        @keyframes bgShift {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.05); }
+        }
+        
+        /* Navbar */
+        .navbar {
+            background: rgba(26, 31, 53, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 0;
+        }
+        
+        .navbar-brand {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .nav-stats {
+            display: flex;
+            gap: 2rem;
+            align-items: center;
+        }
+        
+        .nav-stat {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .nav-stat strong {
+            color: var(--text-primary);
+            font-weight: 600;
+            margin-left: 0.25rem;
+        }
+        
+        /* Container */
+        .dashboard-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+        
+        /* Header */
+        .dashboard-header {
+            margin-bottom: 2.5rem;
+        }
+        
+        .dashboard-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff 0%, var(--text-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+        
+        .dashboard-subtitle {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            font-weight: 400;
+        }
+        
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.75rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--accent-blue);
+            box-shadow: 0 20px 40px rgba(99, 102, 241, 0.2);
+        }
+        
+        .stat-card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+        
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-change {
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .stat-change.positive {
+            color: var(--accent-green);
+        }
+        
+        .stat-change.negative {
+            color: var(--accent-red);
+        }
+        
+        /* Bot Cards */
+        .bots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+            gap: 2rem;
+        }
+        
+        .bot-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .bot-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at 50% 0%, var(--glow-blue), transparent 70%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+        
+        .bot-card:hover {
+            border-color: var(--accent-blue);
+            transform: translateY(-2px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        .bot-card:hover::after {
+            opacity: 0.1;
+        }
+        
+        .bot-header {
+            padding: 1.75rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+        }
+        
+        .bot-header::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, var(--accent-blue), var(--accent-purple));
+        }
+        
+        .bot-info {
+            flex: 1;
+            padding-left: 1rem;
+        }
+        
+        .bot-name {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .bot-description {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        
+        .status-badge {
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .status-badge.connected {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
+            color: var(--accent-green);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        
+        .status-badge.disconnected {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.1));
+            color: var(--accent-red);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        
+        .connected .status-dot {
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+        }
+        
+        .disconnected .status-dot {
+            background: var(--accent-red);
+            box-shadow: 0 0 10px var(--accent-red);
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.2); }
+        }
+        
+        /* Bot Metrics Grid */
+        .bot-metrics {
+            padding: 1.75rem;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1.5rem;
+        }
+        
+        .bot-metric {
+            text-align: center;
+        }
+        
+        .bot-metric-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+        
+        .bot-metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        
+        /* Collapsible Sections */
+        .collapsible-section {
+            border-top: 1px solid var(--border-color);
+        }
+        
+        .collapsible-header {
+            padding: 1.25rem 1.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.2s ease;
+            user-select: none;
+        }
+        
+        .collapsible-header:hover {
+            background: rgba(99, 102, 241, 0.05);
+        }
+        
+        .collapsible-title {
+            font-size: 1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .collapsible-icon {
+            transition: transform 0.3s ease;
+        }
+        
+        .collapsed .collapsible-icon {
+            transform: rotate(-90deg);
+        }
+        
+        .collapsible-content {
+            padding: 0 1.75rem 1.75rem;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .collapsible-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .collapsible-content::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 3px;
+        }
+        
+        .collapsible-content::-webkit-scrollbar-thumb {
+            background: var(--accent-blue);
+            border-radius: 3px;
+        }
+        
+        /* Position & Trade Items */
+        .position-item, .trade-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            transition: all 0.2s ease;
+        }
+        
+        .position-item:hover, .trade-item:hover {
+            border-color: var(--accent-blue);
+            background: var(--bg-card-hover);
+        }
+        
+        .item-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+        
+        .item-details {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .detail-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .badge-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+        }
+        
+        .badge-warning {
+            background: rgba(249, 115, 22, 0.2);
+            color: var(--accent-orange);
+        }
+        
+        .badge-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .bots-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .bot-metrics {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .dashboard-title {
+                font-size: 2rem;
+            }
+            
+            .nav-stats {
+                display: none;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .bot-metrics {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* Loading Animation */
+        .refresh-indicator {
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-secondary);
+        }
+        
+        .empty-state i {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
     </style>
 </head>
 <body>
-    <div id="last-update" class="timestamp">
-        Last updated: <span id="update-time">{{ now.strftime('%H:%M:%S') }}</span>
-        <span id="refresh-indicator" style="display:none;">🔄</span>
-    </div>
-
-    <div class="container-fluid">
-        <h1 class="mb-4">🤖 Multi-Bot Dashboard (API-Based)</h1>
-        
-        <!-- Combined Overview -->
-        <div class="row mb-4">
-            <div class="col-md-12">
-                <div class="card">
-                    <div class="card-header">
-                        <h5>📊 Combined Overview ({{ combined.connected_bots }}/{{ combined.total_bots }} bots connected)</h5>
+        <!-- Navigation Bar -->
+        <nav class="navbar navbar-expand-lg fixed-top">
+            <div class="container-fluid" style="max-width: 1600px; margin: 0 auto; padding: 0 1.5rem;">
+                <div class="navbar-brand">
+                    <i class="fas fa-robot"></i> Polymarket Copy Trading
+                </div>
+                <div class="nav-stats d-none d-lg-flex">
+                    <div class="nav-stat">
+                        <i class="fas fa-server"></i>
+                        <strong>{{ combined.connected_bots }}/{{ combined.total_bots }}</strong> Bots
                     </div>
-                    <div class="card-body">
-                        <div class="row">
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: #1e3a5f;">
-                                    <small>Total Balance</small>
-                                    <h3>${{ "%.2f"|format(combined.total_balance) }}</h3>
-                                </div>
+                    <div class="nav-stat">
+                        <i class="fas fa-clock"></i>
+                        <strong id="update-time">{{ now.strftime('%H:%M:%S') }}</strong>
+                        <span id="refresh-indicator" class="refresh-indicator" style="display:none;">
+                            <i class="fas fa-sync-alt"></i>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+    
+        <!-- Main Content -->
+        <div class="dashboard-container" style="margin-top: 80px;">
+            <!-- Header -->
+            <div class="dashboard-header">
+                <h1 class="dashboard-title">
+                    <i class="fas fa-chart-line"></i> Trading Dashboard
+                </h1>
+                <p class="dashboard-subtitle">Real-time monitoring for your copy trading bots</p>
+            </div>
+    
+            <!-- Stats Grid -->
+            <div class="stats-grid">
+                <!-- Total Balance -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));">
+                        <i class="fas fa-wallet"></i>
+                    </div>
+                    <div class="stat-label">Total Balance</div>
+                    <div class="stat-value">${{ "%.2f"|format(combined.total_balance) }}</div>
+                </div>
+    
+                <!-- Daily P&L -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, {% if combined.total_daily_pnl >= 0 %}var(--accent-green), var(--accent-cyan){% else %}var(--accent-red), var(--accent-orange){% endif %});">
+                        <i class="fas fa-{% if combined.total_daily_pnl >= 0 %}arrow-trend-up{% else %}arrow-trend-down{% endif %}"></i>
+                    </div>
+                    <div class="stat-label">Daily P&L</div>
+                    <div class="stat-value {% if combined.total_daily_pnl >= 0 %}stat-change positive{% else %}stat-change negative{% endif %}">
+                        ${{ "%.2f"|format(combined.total_daily_pnl) }}
+                    </div>
+                </div>
+    
+                <!-- Total Positions -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));">
+                        <i class="fas fa-layer-group"></i>
+                    </div>
+                    <div class="stat-label">Open Positions</div>
+                    <div class="stat-value">{{ combined.total_positions }}</div>
+                </div>
+    
+                <!-- Position Value -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));">
+                        <i class="fas fa-chart-pie"></i>
+                    </div>
+                    <div class="stat-label">Position Value</div>
+                    <div class="stat-value">${{ "%.2f"|format(combined.total_position_value) }}</div>
+                </div>
+    
+                <!-- Trades Today -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));">
+                        <i class="fas fa-exchange-alt"></i>
+                    </div>
+                    <div class="stat-label">Trades Today</div>
+                    <div class="stat-value">{{ combined.total_trades_today }}</div>
+                </div>
+    
+                <!-- Success Rate -->
+                <div class="stat-card">
+                    <div class="stat-icon" style="background: linear-gradient(135deg, var(--accent-orange), var(--accent-red));">
+                        <i class="fas fa-bullseye"></i>
+                    </div>
+                    <div class="stat-label">Avg Success</div>
+                    <div class="stat-value">{{ "%.1f"|format(combined.average_success_rate) }}%</div>
+                </div>
+            </div>
+    
+            <!-- Bot Cards Grid -->
+            <div class="bots-grid">
+                {% for bot in bots %}
+                <div class="bot-card">
+                    <!-- Bot Header -->
+                    <div class="bot-header">
+                        <div class="bot-info">
+                            <div class="bot-name">
+                                <i class="fas fa-robot"></i>
+                                {{ bot.name }}
                             </div>
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: {% if combined.total_daily_pnl >= 0 %}#1e4d2b{% else %}#4d1e1e{% endif %};">
-                                    <small>Daily P&L</small>
-                                    <h3 class="{% if combined.total_daily_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                                        ${{ "%.2f"|format(combined.total_daily_pnl) }}
-                                    </h3>
-                                </div>
+                            <div class="bot-description">{{ bot.description }}</div>
+                        </div>
+                        <div>
+                            <span class="status-badge {% if bot.connected %}connected{% else %}disconnected{% endif %}">
+                                <span class="status-dot"></span>
+                                {{ 'Online' if bot.connected else 'Offline' }}
+                            </span>
+                        </div>
+                    </div>
+    
+                    {% if bot.error %}
+                    <div style="padding: 1rem 1.75rem; background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--accent-red);">
+                        <i class="fas fa-exclamation-triangle"></i> <strong>Error:</strong> {{ bot.error }}
+                    </div>
+                    {% endif %}
+    
+                    {% if bot.connected %}
+                    <!-- Bot Metrics -->
+                    <div class="bot-metrics">
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-wallet"></i> Balance
                             </div>
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: #2e1e4d;">
-                                    <small>Total Positions</small>
-                                    <h3>{{ combined.total_positions }}</h3>
-                                </div>
+                            <div class="bot-metric-value">${{ "%.2f"|format(bot.get('metrics', {}).get('balance', 0)) }}</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-chart-line"></i> Daily P&L
                             </div>
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: #4d2e1e;">
-                                    <small>Position Value</small>
-                                    <h3>${{ "%.2f"|format(combined.total_position_value) }}</h3>
-                                </div>
+                            <div class="bot-metric-value {% if bot.get('metrics', {}).get('daily_pnl', 0) >= 0 %}stat-change positive{% else %}stat-change negative{% endif %}">
+                                ${{ "%.2f"|format(bot.get('metrics', {}).get('daily_pnl', 0)) }}
                             </div>
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: #1e4d4d;">
-                                    <small>Trades Today</small>
-                                    <h3>{{ combined.total_trades_today }}</h3>
-                                </div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-layer-group"></i> Positions
                             </div>
-                            <div class="col-md-2">
-                                <div class="metric-card" style="background-color: #1e3a5f;">
-                                    <small>Avg Success Rate</small>
-                                    <h3>{{ "%.1f"|format(combined.average_success_rate) }}%</h3>
-                                </div>
+                            <div class="bot-metric-value">{{ bot.get('metrics', {}).get('total_positions', 0) }}</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-percentage"></i> Copy %
+                            </div>
+                            <div class="bot-metric-value">{{ bot.get('config', {}).get('copy_percentage', 0) | round(1) }}%</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-exchange-alt"></i> Trades
+                            </div>
+                            <div class="bot-metric-value">{{ bot.get('metrics', {}).get('trades_today', 0) }}</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-bullseye"></i> Success
+                            </div>
+                            <div class="bot-metric-value">{{ "%.1f"|format(bot.get('metrics', {}).get('success_rate', 0)) }}%</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-clock"></i> Uptime
+                            </div>
+                            <div class="bot-metric-value">{{ (bot.get('status', {}).get('uptime_seconds', 0) / 3600) | round(1) }}h</div>
+                        </div>
+                        <div class="bot-metric">
+                            <div class="bot-metric-label">
+                                <i class="fas fa-shield-alt"></i> Mode
+                            </div>
+                            <div class="bot-metric-value" style="font-size: 1rem;">
+                                {{ 'DRY RUN' if bot.get('status', {}).get('configuration', {}).get('dry_run') else 'LIVE' }}
                             </div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Individual Bot Cards -->
-        {% for bot in bots %}
-        <div class="card mb-4">
-            <div class="card-header bot-header" style="border-left-color: {{ bot.color }};">
-                <h5>
-                    {{ bot.name }}
-                    <span class="status-badge {% if bot.connected %}status-connected{% else %}status-disconnected{% endif %}">
-                        {{ 'Connected' if bot.connected else 'Disconnected' }}
-                    </span>
-                </h5>
-                <small class="text-muted">{{ bot.description }}</small>
-                {% if bot.error %}
-                <div class="alert alert-danger mt-2">Error: {{ bot.error }}</div>
-                {% endif %}
-            </div>
-            
-            {% if bot.connected %}
-            <div class="card-body">
-                <!-- Bot Status & Metrics -->
-                <div class="row mb-3">
-                    <div class="col-md-3">
-                        <strong>Status:</strong> {{ 'Running' if bot.get('status', {}).get('running') else 'Stopped' }}<br>
-                        <strong>Uptime:</strong> {{ (bot.get('status', {}).get('uptime_seconds', 0) / 3600) | round(1) }}h<br>
-                        <strong>Trades Today:</strong> {{ bot.get('metrics', {}).get('trades_today', 0) }}
-                    </div>
-                    <div class="col-md-3">
-                        <strong>Balance:</strong> ${{ "%.2f"|format(bot.get('metrics', {}).get('balance', 0)) }}<br>
-                        <strong>Daily P&L:</strong> 
-                        <span class="{% if bot.get('metrics', {}).get('daily_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
-                            ${{ "%.2f"|format(bot.get('metrics', {}).get('daily_pnl', 0)) }}
-                        </span><br>
-                        <strong>Success Rate:</strong> {{ "%.1f"|format(bot.get('metrics', {}).get('success_rate', 0)) }}%
-                    </div>
-                    <div class="col-md-3">
-                        <strong>Positions:</strong> {{ bot.get('metrics', {}).get('total_positions', 0) }}<br>
-                        <strong>Position Value:</strong> ${{ "%.2f"|format(bot.get('metrics', {}).get('total_position_value', 0)) }}<br>
-                        <strong>Copy %:</strong> {{ bot.get('config', {}).get('copy_percentage', 0) | round(1) }}%
-                    </div>
-                    <div class="col-md-3">
-                        <strong>Target:</strong> {{ (bot.get('config', {}).get('target_trader', 'N/A'))[:10] }}...<br>
-                        <strong>Max Loss:</strong> ${{ "%.0f"|format(bot.get('config', {}).get('max_daily_loss', 0)) }}<br>
-                        <strong>Mode:</strong> {{ 'DRY RUN' if bot.get('status', {}).get('configuration', {}).get('dry_run') else 'LIVE' }}
-                    </div>
-                </div>
-
-                <!-- Open Positions (Collapsible) -->
-                {% if bot.get('positions') %}
-                <h6>
-                    <a data-bs-toggle="collapse" href="#positions-{{ loop.index }}" role="button" aria-expanded="false" aria-controls="positions-{{ loop.index }}" style="text-decoration: none; color: inherit;">
-                        📊 Open Positions ({{ bot.get('positions', []) | length }}) 
-                        <small style="color: #666;">▼ Click to expand</small>
-                    </a>
-                </h6>
-                <div class="collapse" id="positions-{{ loop.index }}">
-                    <div class="row">
-                        {% for pos in bot.get('positions', [])[:5] %}
-                        <div class="col-md-6">
+    
+                    <!-- Open Positions (Collapsible) -->
+                    {% if bot.get('positions') %}
+                    <div class="collapsible-section">
+                        <div class="collapsible-header collapsed" onclick="toggleCollapse(this, 'positions-{{ loop.index }}')">
+                            <div class="collapsible-title">
+                                <i class="fas fa-chart-area"></i>
+                                Open Positions ({{ bot.get('positions', []) | length }})
+                            </div>
+                            <i class="fas fa-chevron-down collapsible-icon"></i>
+                        </div>
+                        <div class="collapsible-content" id="positions-{{ loop.index }}" style="display: none;">
+                            {% for pos in bot.get('positions', [])[:10] %}
                             <div class="position-item">
-                                <strong>{{ pos.get('market_title', 'Unknown')[:50] }}...</strong><br>
-                                <small>
-                                    {{ pos.get('side', 'N/A') }} {{ "%.2f"|format(pos.get('size', 0)) }} @ ${{ "%.2f"|format(pos.get('avg_price', 0)) }}
-                                    → ${{ "%.2f"|format(pos.get('current_price', 0)) }}
-                                    <span class="{% if pos.get('unrealized_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
-                                        (${{ "%.2f"|format(pos.get('unrealized_pnl', 0)) }})
+                                <div class="item-title">{{ pos.get('market_title', 'Unknown')[:60] }}</div>
+                                <div class="item-details">
+                                    <span><i class="fas fa-tag"></i> {{ pos.get('side', 'N/A') }}</span>
+                                    <span><i class="fas fa-coins"></i> {{ "%.2f"|format(pos.get('size', 0)) }} shares</span>
+                                    <span><i class="fas fa-dollar-sign"></i> ${{ "%.2f"|format(pos.get('avg_price', 0)) }} → ${{ "%.2f"|format(pos.get('current_price', 0)) }}</span>
+                                    <span class="detail-badge {% if pos.get('unrealized_pnl', 0) >= 0 %}badge-success{% else %}badge-danger{% endif %}">
+                                        P&L: ${{ "%.2f"|format(pos.get('unrealized_pnl', 0)) }}
                                     </span>
-                                </small>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="collapsible-section">
+                        <div class="collapsible-header">
+                            <div class="collapsible-title">
+                                <i class="fas fa-chart-area"></i>
+                                Open Positions (0)
                             </div>
                         </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% else %}
-                <h6>📊 Open Positions (0)</h6>
-                <p class="text-muted">No open positions</p>
-                {% endif %}
-
-                <!-- Recent Trades (Collapsible) -->
-                {% if bot.get('trades') %}
-                <h6 class="mt-3">
-                    <a data-bs-toggle="collapse" href="#trades-{{ loop.index }}" role="button" aria-expanded="false" aria-controls="trades-{{ loop.index }}" style="text-decoration: none; color: inherit;">
-                        📝 Recent Trades ({{ bot.get('trades', []) | length }})
-                        <small style="color: #666;">▼ Click to expand</small>
-                    </a>
-                </h6>
-                <div class="collapse" id="trades-{{ loop.index }}">
-                    <div style="max-height: 300px; overflow-y: auto;">
-                        {% for trade in bot.get('trades', [])[:10] %}
-                        <div class="trade-item">
-                            <strong>{{ trade.get('market_title', 'Unknown')[:60] }}</strong><br>
-                            <small>
-                                {{ trade.get('side', 'N/A') }} {{ "%.2f"|format(trade.get('copy_size', 0)) }} shares 
-                                (${{ "%.2f"|format(trade.get('copy_amount_usd', 0)) }})
-                                - <span class="badge bg-{{ 'success' if trade.get('status') == 'EXECUTED' else 'warning' if trade.get('status') == 'PARTIAL_FILL' else 'danger' }}">
-                                    {{ trade.get('status', 'UNKNOWN') }}
-                                </span>
-                                <span class="timestamp">{{ (trade.get('timestamp', 'N/A'))[:19] if trade.get('timestamp') else 'N/A' }}</span>
-                            </small>
+                        <div style="padding: 0 1.75rem 1.75rem;">
+                            <div class="empty-state">
+                                <i class="fas fa-inbox"></i>
+                                <p>No open positions</p>
+                            </div>
                         </div>
-                        {% endfor %}
                     </div>
+                    {% endif %}
+    
+                    <!-- Recent Trades (Collapsible) -->
+                    {% if bot.get('trades') %}
+                    <div class="collapsible-section">
+                        <div class="collapsible-header collapsed" onclick="toggleCollapse(this, 'trades-{{ loop.index }}')">
+                            <div class="collapsible-title">
+                                <i class="fas fa-list"></i>
+                                Recent Trades ({{ bot.get('trades', []) | length }})
+                            </div>
+                            <i class="fas fa-chevron-down collapsible-icon"></i>
+                        </div>
+                        <div class="collapsible-content" id="trades-{{ loop.index }}" style="display: none;">
+                            {% for trade in bot.get('trades', [])[:15] %}
+                            <div class="trade-item">
+                                <div class="item-title">{{ trade.get('market_title', 'Unknown')[:60] }}</div>
+                                <div class="item-details">
+                                    <span><i class="fas fa-tag"></i> {{ trade.get('side', 'N/A') }}</span>
+                                    <span><i class="fas fa-coins"></i> {{ "%.2f"|format(trade.get('copy_size', 0)) }} shares</span>
+                                    <span><i class="fas fa-dollar-sign"></i> ${{ "%.2f"|format(trade.get('copy_amount_usd', 0)) }}</span>
+                                    <span class="detail-badge {% if trade.get('status') == 'EXECUTED' %}badge-success{% elif trade.get('status') == 'PARTIAL_FILL' %}badge-warning{% else %}badge-danger{% endif %}">
+                                        {{ trade.get('status', 'UNKNOWN') }}
+                                    </span>
+                                    <span style="color: var(--text-secondary); font-size: 0.75rem;">
+                                        <i class="fas fa-clock"></i> {{ (trade.get('timestamp', 'N/A'))[:19] if trade.get('timestamp') else 'N/A' }}
+                                    </span>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endif %}
                 </div>
-                {% endif %}
+                {% endfor %}
             </div>
-            {% endif %}
         </div>
-        {% endfor %}
-    </div>
-
-    <script>
-        // Auto-refresh every {{ config.auto_refresh_seconds }} seconds
-        setInterval(function() {
-            document.getElementById('refresh-indicator').style.display = 'inline';
-            fetch('/api/refresh')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('update-time').textContent = new Date().toLocaleTimeString();
-                    document.getElementById('refresh-indicator').style.display = 'none';
-                    // Full page refresh for simplicity (could do partial updates)
-                    location.reload();
-                })
-                .catch(error => {
-                    console.error('Refresh failed:', error);
-                    document.getElementById('refresh-indicator').style.display = 'none';
-                });
-        }, {{ config.auto_refresh_seconds * 1000 }});
-    </script>
-</body>
-</html>
+    
+        <!-- Bootstrap JS & Custom Scripts -->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            // Collapsible toggle function
+            function toggleCollapse(header, targetId) {
+                const content = document.getElementById(targetId);
+                const isCollapsed = content.style.display === 'none';
+                
+                if (isCollapsed) {
+                    content.style.display = 'block';
+                    header.classList.remove('collapsed');
+                } else {
+                    content.style.display = 'none';
+                    header.classList.add('collapsed');
+                }
+            }
+    
+            // Auto-refresh every {{ config.auto_refresh_seconds }} seconds
+            setInterval(function() {
+                document.getElementById('refresh-indicator').style.display = 'inline';
+                fetch('/api/refresh')
+                    .then(response => response.json())
+                    .then(data => {
+                        document.getElementById('update-time').textContent = new Date().toLocaleTimeString();
+                        document.getElementById('refresh-indicator').style.display = 'none';
+                        // Full page reload for simplicity
+                        location.reload();
+                    })
+                    .catch(error => {
+                        console.error('Refresh failed:', error);
+                        document.getElementById('refresh-indicator').style.display = 'none';
+                    });
+            }, {{ config.auto_refresh_seconds * 1000 }});
+        </script>
+    </body>
+    </html>
 """
 
 if __name__ == "__main__":
