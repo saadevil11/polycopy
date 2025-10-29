@@ -335,46 +335,61 @@ DASHBOARD_HTML = """
                     </div>
                 </div>
 
-                <!-- Open Positions -->
+                <!-- Open Positions (Collapsible) -->
                 {% if bot.get('positions') %}
-                <h6>Open Positions ({{ bot.get('positions', []) | length }})</h6>
-                <div class="row">
-                    {% for pos in bot.get('positions', [])[:5] %}
-                    <div class="col-md-6">
-                        <div class="position-item">
-                            <strong>{{ pos.get('market_title', 'Unknown')[:50] }}...</strong><br>
-                            <small>
-                                {{ pos.get('side', 'N/A') }} {{ "%.2f"|format(pos.get('size', 0)) }} @ ${{ "%.2f"|format(pos.get('avg_price', 0)) }}
-                                → ${{ "%.2f"|format(pos.get('current_price', 0)) }}
-                                <span class="{% if pos.get('unrealized_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
-                                    (${{ "%.2f"|format(pos.get('unrealized_pnl', 0)) }})
-                                </span>
-                            </small>
+                <h6>
+                    <a data-bs-toggle="collapse" href="#positions-{{ loop.index }}" role="button" aria-expanded="false" aria-controls="positions-{{ loop.index }}" style="text-decoration: none; color: inherit;">
+                        📊 Open Positions ({{ bot.get('positions', []) | length }}) 
+                        <small style="color: #666;">▼ Click to expand</small>
+                    </a>
+                </h6>
+                <div class="collapse" id="positions-{{ loop.index }}">
+                    <div class="row">
+                        {% for pos in bot.get('positions', [])[:5] %}
+                        <div class="col-md-6">
+                            <div class="position-item">
+                                <strong>{{ pos.get('market_title', 'Unknown')[:50] }}...</strong><br>
+                                <small>
+                                    {{ pos.get('side', 'N/A') }} {{ "%.2f"|format(pos.get('size', 0)) }} @ ${{ "%.2f"|format(pos.get('avg_price', 0)) }}
+                                    → ${{ "%.2f"|format(pos.get('current_price', 0)) }}
+                                    <span class="{% if pos.get('unrealized_pnl', 0) >= 0 %}positive{% else %}negative{% endif %}">
+                                        (${{ "%.2f"|format(pos.get('unrealized_pnl', 0)) }})
+                                    </span>
+                                </small>
+                            </div>
                         </div>
+                        {% endfor %}
                     </div>
-                    {% endfor %}
                 </div>
                 {% else %}
+                <h6>📊 Open Positions (0)</h6>
                 <p class="text-muted">No open positions</p>
                 {% endif %}
 
-                <!-- Recent Trades -->
+                <!-- Recent Trades (Collapsible) -->
                 {% if bot.get('trades') %}
-                <h6 class="mt-3">Recent Trades ({{ bot.get('trades', []) | length }})</h6>
-                <div style="max-height: 300px; overflow-y: auto;">
-                    {% for trade in bot.get('trades', [])[:10] %}
-                    <div class="trade-item">
-                        <strong>{{ trade.get('market_title', 'Unknown')[:60] }}</strong><br>
-                        <small>
-                            {{ trade.get('side', 'N/A') }} {{ "%.2f"|format(trade.get('copy_size', 0)) }} shares 
-                            (${{ "%.2f"|format(trade.get('copy_amount_usd', 0)) }})
-                            - <span class="badge bg-{{ 'success' if trade.get('status') == 'EXECUTED' else 'warning' if trade.get('status') == 'PARTIAL_FILL' else 'danger' }}">
-                                {{ trade.get('status', 'UNKNOWN') }}
-                            </span>
-                            <span class="timestamp">{{ (trade.get('timestamp', 'N/A'))[:19] if trade.get('timestamp') else 'N/A' }}</span>
-                        </small>
+                <h6 class="mt-3">
+                    <a data-bs-toggle="collapse" href="#trades-{{ loop.index }}" role="button" aria-expanded="false" aria-controls="trades-{{ loop.index }}" style="text-decoration: none; color: inherit;">
+                        📝 Recent Trades ({{ bot.get('trades', []) | length }})
+                        <small style="color: #666;">▼ Click to expand</small>
+                    </a>
+                </h6>
+                <div class="collapse" id="trades-{{ loop.index }}">
+                    <div style="max-height: 300px; overflow-y: auto;">
+                        {% for trade in bot.get('trades', [])[:10] %}
+                        <div class="trade-item">
+                            <strong>{{ trade.get('market_title', 'Unknown')[:60] }}</strong><br>
+                            <small>
+                                {{ trade.get('side', 'N/A') }} {{ "%.2f"|format(trade.get('copy_size', 0)) }} shares 
+                                (${{ "%.2f"|format(trade.get('copy_amount_usd', 0)) }})
+                                - <span class="badge bg-{{ 'success' if trade.get('status') == 'EXECUTED' else 'warning' if trade.get('status') == 'PARTIAL_FILL' else 'danger' }}">
+                                    {{ trade.get('status', 'UNKNOWN') }}
+                                </span>
+                                <span class="timestamp">{{ (trade.get('timestamp', 'N/A'))[:19] if trade.get('timestamp') else 'N/A' }}</span>
+                            </small>
+                        </div>
+                        {% endfor %}
                     </div>
-                    {% endfor %}
                 </div>
                 {% endif %}
             </div>
