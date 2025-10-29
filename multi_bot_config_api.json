@@ -5,6 +5,12 @@
       "api_url": "https://btc1.up.railway.app",
       "description": "Main copy trading bot",
       "color": "#007bff"
+    },
+    {
+      "name": "btc2",
+      "api_url": "https://btc2.up.railway.app",
+      "description": "Second copy trading bot",
+      "color": "#28a745"
     }
   ],
   "dashboard": {
