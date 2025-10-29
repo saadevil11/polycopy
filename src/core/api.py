@@ -198,26 +198,30 @@ class BotAPI:
                 else:
                     logger.debug(f"Portfolio (cached): Total=${total_portfolio:.2f}")
                 
+                # Calculate P&L from database (persists across restarts!)
+                daily_pnl = self.database.calculate_daily_pnl()
+                all_time_pnl = self.database.calculate_all_time_pnl()
+                
+                # Get trade statistics from database (persists across restarts!)
+                trade_stats = self.database.get_trade_statistics()
+                
                 metrics_data = {
-                    "daily_pnl": float(metrics.daily_pnl_usd) if hasattr(metrics, 'daily_pnl_usd') and metrics.daily_pnl_usd else 0,
+                    "daily_pnl": daily_pnl,  # From database - persists across restarts
+                    "total_pnl": all_time_pnl,  # NEW - all-time P&L from database
                     "total_positions": metrics.total_positions if hasattr(metrics, 'total_positions') else 0,
                     "total_position_value": position_value,
                     "balance": total_portfolio,  # Total portfolio value (cash + positions)
                     "cash_balance": cash_balance,  # Available cash only
-                    "trades_today": len(metrics.daily_trades) if hasattr(metrics, 'daily_trades') and metrics.daily_trades else 0,
+                    "trades_today": trade_stats.get('today_trades', 0),  # From database
                     "max_daily_loss": float(metrics.max_daily_loss_usd) if hasattr(metrics, 'max_daily_loss_usd') and metrics.max_daily_loss_usd else 0,
                     "max_positions": metrics.max_positions if hasattr(metrics, 'max_positions') else 0,
-                    "risk_level": "normal"  # Can add logic to determine risk level
+                    "risk_level": "normal",  # Can add logic to determine risk level
+                    # Success rate from database (persists across restarts!)
+                    "success_rate": trade_stats.get('success_rate', 0),
+                    "total_trades": trade_stats.get('total_trades', 0),
+                    "successful_trades": trade_stats.get('successful_trades', 0),
+                    "failed_trades": trade_stats.get('failed_trades', 0)
                 }
-                
-                # Calculate success rate from recent trades
-                if self.bot:
-                    total_trades = self.bot.successful_trades + self.bot.failed_trades
-                    success_rate = (self.bot.successful_trades / total_trades * 100) if total_trades > 0 else 0
-                    metrics_data["success_rate"] = round(success_rate, 1)
-                    metrics_data["total_trades"] = total_trades
-                    metrics_data["successful_trades"] = self.bot.successful_trades
-                    metrics_data["failed_trades"] = self.bot.failed_trades
                 
                 return jsonify({
                     "success": True,

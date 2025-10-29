@@ -272,6 +272,98 @@ class Database:
             logger.error(f"Failed to get trade statistics: {e}")
             return {}
     
+    def calculate_daily_pnl(self) -> float:
+        """Calculate daily P&L from today's executed trades in database"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get today's date
+                today = datetime.now().date().isoformat()
+                
+                # Get all executed trades from today with their details
+                cursor.execute('''
+                    SELECT 
+                        ct.copy_amount_usd,
+                        ct.execution_price,
+                        ct.copy_size,
+                        tt.side,
+                        tt.price as target_price
+                    FROM copy_trades ct
+                    JOIN target_trades tt ON ct.original_trade_id = tt.trade_id
+                    WHERE ct.status IN ('EXECUTED', 'PARTIAL_FILL')
+                    AND date(ct.created_at) = ?
+                ''', (today,))
+                
+                trades = cursor.fetchall()
+                daily_pnl = 0.0
+                
+                for trade in trades:
+                    copy_amount_usd, execution_price, copy_size, side, target_price = trade
+                    
+                    if execution_price and copy_size:
+                        # For BUY: if execution price < target price = good (saved money)
+                        # For SELL: if execution price > target price = good (got more money)
+                        if side == 'BUY':
+                            # Saved money if we bought cheaper than target
+                            pnl = (target_price - execution_price) * copy_size if target_price else 0
+                        else:  # SELL
+                            # Made money if we sold higher than target
+                            pnl = (execution_price - target_price) * copy_size if target_price else 0
+                        
+                        daily_pnl += pnl
+                
+                logger.debug(f"Calculated daily P&L from database: ${daily_pnl:.2f} ({len(trades)} trades)")
+                return daily_pnl
+                
+        except Exception as e:
+            logger.error(f"Failed to calculate daily P&L: {e}")
+            return 0.0
+    
+    def calculate_all_time_pnl(self) -> float:
+        """Calculate all-time P&L from all executed trades in database"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get all executed trades with their details
+                cursor.execute('''
+                    SELECT 
+                        ct.copy_amount_usd,
+                        ct.execution_price,
+                        ct.copy_size,
+                        tt.side,
+                        tt.price as target_price
+                    FROM copy_trades ct
+                    JOIN target_trades tt ON ct.original_trade_id = tt.trade_id
+                    WHERE ct.status IN ('EXECUTED', 'PARTIAL_FILL')
+                ''')
+                
+                trades = cursor.fetchall()
+                total_pnl = 0.0
+                
+                for trade in trades:
+                    copy_amount_usd, execution_price, copy_size, side, target_price = trade
+                    
+                    if execution_price and copy_size:
+                        # For BUY: if execution price < target price = good (saved money)
+                        # For SELL: if execution price > target price = good (got more money)
+                        if side == 'BUY':
+                            # Saved money if we bought cheaper than target
+                            pnl = (target_price - execution_price) * copy_size if target_price else 0
+                        else:  # SELL
+                            # Made money if we sold higher than target
+                            pnl = (execution_price - target_price) * copy_size if target_price else 0
+                        
+                        total_pnl += pnl
+                
+                logger.debug(f"Calculated all-time P&L from database: ${total_pnl:.2f} ({len(trades)} trades)")
+                return total_pnl
+                
+        except Exception as e:
+            logger.error(f"Failed to calculate all-time P&L: {e}")
+            return 0.0
+    
     def cleanup_old_data(self, days_to_keep: int = 30):
         """Clean up old data to keep database size manageable"""
         try:
