@@ -326,7 +326,7 @@ DASHBOARD_HTML = """
                     <div class="col-md-3">
                         <strong>Positions:</strong> {{ bot.get('metrics', {}).get('total_positions', 0) }}<br>
                         <strong>Position Value:</strong> ${{ "%.2f"|format(bot.get('metrics', {}).get('total_position_value', 0)) }}<br>
-                        <strong>Copy %:</strong> {{ (bot.get('config', {}).get('copy_percentage', 0) * 100) | round(1) }}%
+                        <strong>Copy %:</strong> {{ bot.get('config', {}).get('copy_percentage', 0) | round(1) }}%
                     </div>
                     <div class="col-md-3">
                         <strong>Target:</strong> {{ (bot.get('config', {}).get('target_trader', 'N/A'))[:10] }}...<br>
