@@ -21,28 +21,79 @@ app = Flask(__name__)
 
 # Load configuration
 def load_config():
-    """Load bot configuration from file"""
-    config_path = Path(__file__).parent.parent / "multi_bot_config_api.json"
+    """
+    Load bot configuration from environment variables OR file
     
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            return json.load(f)
+    Priority:
+    1. Environment variables (BOT_1_NAME, BOT_1_URL, etc.)
+    2. JSON config file
+    3. Default config
+    """
+    bots = []
     
-    # Default configuration
+    # 1. Try to load from environment variables
+    bot_index = 1
+    while True:
+        bot_name = os.getenv(f"BOT_{bot_index}_NAME")
+        bot_url = os.getenv(f"BOT_{bot_index}_URL")
+        
+        if not bot_name or not bot_url:
+            break  # No more bots in env vars
+        
+        # Optional: description and color
+        bot_desc = os.getenv(f"BOT_{bot_index}_DESC", f"Bot {bot_index}")
+        bot_color = os.getenv(f"BOT_{bot_index}_COLOR", _get_color_for_index(bot_index))
+        
+        bots.append({
+            "name": bot_name,
+            "api_url": bot_url,
+            "description": bot_desc,
+            "color": bot_color
+        })
+        bot_index += 1
+    
+    # 2. If no env vars found, try JSON config file
+    if not bots:
+        config_path = Path(__file__).parent.parent / "multi_bot_config_api.json"
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                bots = config.get("bots", [])
+    
+    # 3. If still no bots, use default
+    if not bots:
+        bots = [{
+            "name": "Bot 1",
+            "api_url": os.getenv("BOT1_API_URL", "http://localhost:8081"),
+            "description": "Primary bot",
+            "color": "#007bff"
+        }]
+    
+    logger.info(f"📊 Loaded {len(bots)} bot(s) for dashboard")
+    for bot in bots:
+        logger.info(f"  - {bot['name']}: {bot['api_url']}")
+    
     return {
-        "bots": [
-            {
-                "name": "Bot 1",
-                "api_url": os.getenv("BOT1_API_URL", "http://localhost:8081"),
-                "description": "Primary bot",
-                "color": "#007bff"
-            }
-        ],
+        "bots": bots,
         "dashboard": {
-            "port": 8080,
-            "auto_refresh_seconds": 30
+            "port": int(os.getenv("DASHBOARD_PORT", "8080")),
+            "auto_refresh_seconds": int(os.getenv("DASHBOARD_REFRESH", "30"))
         }
     }
+
+def _get_color_for_index(index: int) -> str:
+    """Get a color for a bot based on its index"""
+    colors = [
+        "#007bff",  # Blue
+        "#28a745",  # Green
+        "#dc3545",  # Red
+        "#ffc107",  # Yellow
+        "#17a2b8",  # Cyan
+        "#6f42c1",  # Purple
+        "#fd7e14",  # Orange
+        "#20c997",  # Teal
+    ]
+    return colors[(index - 1) % len(colors)]
 
 CONFIG = load_config()
 
