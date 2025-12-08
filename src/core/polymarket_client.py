@@ -413,6 +413,111 @@ class PolymarketClient:
             logger.error(f"Failed to get order status for {order_id}: {e}")
             return None
     
+    async def _place_gtc_order_directly(
+        self, 
+        token_id: str, 
+        side: TradeSide, 
+        amount_usd: float,
+        original_price: Optional[float],
+        details: dict
+    ) -> Tuple[Optional[str], OrderExecutionResult, Dict[str, Any]]:
+        """Place GTC order directly without trying FAK first (for GTC-only mode)"""
+        config = self.trading_config
+        
+        try:
+            # Get current market price (or use original price as fallback)
+            current_price = None
+            if not config.skip_price_fetch_for_speed:
+                try:
+                    midpoint_data = self.client.get_midpoint(token_id)
+                    if isinstance(midpoint_data, dict):
+                        current_price = float(midpoint_data.get('mid', 0))
+                    elif isinstance(midpoint_data, (int, float)):
+                        current_price = float(midpoint_data)
+                    
+                    if current_price and current_price > 0:
+                        logger.debug(f"Current market price: ${current_price:.4f}")
+                    else:
+                        current_price = None
+                except Exception as e:
+                    logger.debug(f"Could not get current price (will use target's price): {e}")
+            
+            base_price = current_price if current_price and current_price > 0 else original_price
+            
+            if base_price and base_price > 0:
+                # Determine limit price based on configuration
+                if config.gtc_use_exact_target_price:
+                    limit_price = base_price
+                    slippage_info = "exact target price (no slippage)"
+                else:
+                    # Calculate acceptable price with slippage
+                    if side == TradeSide.BUY:
+                        limit_price = base_price * (1 + config.price_slippage_tolerance)
+                    else:
+                        limit_price = base_price * (1 - config.price_slippage_tolerance)
+                    slippage_info = f"{config.price_slippage_tolerance*100:.1f}% slippage"
+                
+                # Calculate size from amount
+                if side == TradeSide.SELL:
+                    size = amount_usd  # For SELL: amount_usd is actually share count
+                    
+                    # Ensure SELL orders meet 5-share minimum
+                    if config.gtc_enforce_min_shares and size < 5.0:
+                        logger.warning(f"⚠️  GTC SELL order too small ({size:.2f} shares < 5 minimum)")
+                        logger.info(f"📈 Increasing to 5 shares minimum for GTC order")
+                        size = 5.0
+                else:
+                    size = amount_usd / limit_price  # Convert USD to shares
+                    
+                    # Ensure BUY orders meet 5-share minimum
+                    if config.gtc_enforce_min_shares and size < 5.0:
+                        logger.warning(f"⚠️  GTC BUY order too small ({size:.2f} shares < 5 minimum)")
+                        logger.info(f"📈 Increasing to 5 shares minimum for GTC order")
+                        size = 5.0
+                        adjusted_amount = size * limit_price
+                        logger.info(f"💰 Adjusted GTC amount: ${adjusted_amount:.2f} (was ${amount_usd:.2f})")
+                
+                price_source = "current market price" if (current_price and current_price > 0) else "target's price (fallback)"
+                
+                logger.info(f"📊 Placing GTC-only order: {size:.2f} shares @ ${limit_price:.4f}")
+                logger.info(f"   Base price: ${base_price:.4f} ({price_source})")
+                logger.info(f"   Strategy: {slippage_info}")
+                
+                gtc_order_id = self.place_limit_order(token_id, side, size, limit_price)
+                
+                if gtc_order_id:
+                    logger.success(f"✅ GTC-only order placed: {gtc_order_id}")
+                    logger.info(f"⏰ Order will remain active until filled or cancelled")
+                    
+                    # Quick check if it fills immediately
+                    await asyncio.sleep(0.5)
+                    gtc_order_status = self.get_order_status(gtc_order_id)
+                    
+                    if gtc_order_status:
+                        gtc_filled_size = float(gtc_order_status.get('size_matched', 0))
+                        if gtc_filled_size > 0:
+                            details['filled_amount'] = gtc_filled_size
+                            details['avg_price'] = float(gtc_order_status.get('price', 0))
+                            logger.success(f"✅ GTC-only order partially/fully filled: {gtc_filled_size} shares")
+                            return gtc_order_id, OrderExecutionResult.SUCCESS, details
+                    
+                    # GTC order placed but not filled yet - still return as success
+                    logger.info(f"📊 GTC-only order placed, waiting for fill...")
+                    return gtc_order_id, OrderExecutionResult.SUCCESS, details
+                else:
+                    logger.error("❌ GTC-only order placement failed")
+                    details['failure_reasons'].append("GTC-only order failed")
+                    return None, OrderExecutionResult.FAILED, details
+            else:
+                logger.error("❌ Cannot place GTC-only order: no price data available")
+                details['failure_reasons'].append("GTC-only: no price data")
+                return None, OrderExecutionResult.FAILED, details
+                
+        except Exception as e:
+            logger.error(f"❌ GTC-only order error: {e}")
+            details['failure_reasons'].append(f"GTC-only error: {str(e)}")
+            return None, OrderExecutionResult.FAILED, details
+    
     async def place_order_with_retry(
         self, 
         token_id: str, 
@@ -438,6 +543,14 @@ class PolymarketClient:
         }
         
         logger.debug(f"🎯 Order execution: {side.value} ${amount_usd:.2f}")
+        
+        # Check if we should use GTC-only mode (skip FAK entirely)
+        if config.use_gtc_only:
+            logger.info("🎯 Using GTC-only mode (skipping FAK for more accurate % copying)")
+            details['strategy_used'] = 'GTC_ONLY'
+            
+            # Jump directly to GTC placement logic
+            return await self._place_gtc_order_directly(token_id, side, amount_usd, original_price, details)
         
         # Get current market price for FAK fill percentage calculation
         # Can be skipped for maximum speed (uses target's price instead)
@@ -585,8 +698,25 @@ class PolymarketClient:
                     # For BUY: gtc_amount is USD, convert to shares
                     if side == TradeSide.SELL:
                         size = gtc_amount  # Already in shares
+                        
+                        # Ensure SELL orders meet 5-share minimum for GTC/limit orders
+                        if config.gtc_enforce_min_shares and size < 5.0:
+                            logger.warning(f"⚠️  GTC SELL order too small ({size:.2f} shares < 5 minimum)")
+                            logger.info(f"📈 Increasing to 5 shares minimum for GTC order")
+                            size = 5.0
+                            # Update gtc_amount to reflect the increased size
+                            gtc_amount = size
                     else:
                         size = gtc_amount / limit_price  # Convert USD to shares
+                        
+                        # Ensure BUY orders meet 5-share minimum for GTC/limit orders
+                        if config.gtc_enforce_min_shares and size < 5.0:
+                            logger.warning(f"⚠️  GTC BUY order too small ({size:.2f} shares < 5 minimum)")
+                            logger.info(f"📈 Increasing to 5 shares minimum for GTC order")
+                            size = 5.0
+                            # Update gtc_amount to reflect the increased USD amount needed
+                            gtc_amount = size * limit_price
+                            logger.info(f"💰 Adjusted GTC amount: ${gtc_amount:.2f} (was ${amount_usd:.2f})")
                     
                     price_source = "current market price" if (current_price and current_price > 0) else "target's price (fallback)"
                     

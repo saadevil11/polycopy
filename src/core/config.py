@@ -34,14 +34,18 @@ class TradingConfig:
     allow_15min_markets: bool = False         # Allow trading on 15-minute interval markets (high risk!)
     allow_hourly_markets: bool = True         # Allow trading on hourly interval markets
     
-    # Order Execution (NEW)
-    max_order_retries: int = 1                    # Maximum retry attempts for failed orders (1 = no retries, go straight to GTC)
-    retry_delay_seconds: float = 0.0              # Delay between retries (0 = instant)
+    # Order Execution
+    use_gtc_only: bool = False                    # If True, skip FAK and use only GTC orders (more accurate % copying)
     price_slippage_tolerance: float = 0.14        # Price slippage tolerance for GTC orders (14% = $0.50 → $0.57)
-    use_gtc_fallback: bool = True                 # Use GTC orders if FAK fails repeatedly
+    
+    # Advanced order execution (auto-configured based on use_gtc_only)
+    max_order_retries: int = 1                    # Maximum retry attempts for failed orders
+    retry_delay_seconds: float = 0.0              # Delay between retries
+    use_gtc_fallback: bool = True                 # Use GTC orders if FAK fails
     order_timeout_seconds: int = 10               # Timeout for order execution
     gtc_use_exact_target_price: bool = False      # If True, GTC uses exact target price (no slippage)
-    skip_price_fetch_for_speed: bool = True       # Skip fetching current price to execute faster (use target's price)
+    skip_price_fetch_for_speed: bool = True       # Skip fetching current price to execute faster
+    gtc_enforce_min_shares: bool = True           # Ensure GTC orders meet 5-share minimum
     
     def __post_init__(self):
         if self.excluded_markets is None:
@@ -113,14 +117,17 @@ trading_config = TradingConfig(
     min_target_trade_value_usd=float(os.getenv("MIN_TARGET_TRADE_VALUE_USD", "4.0")),
     allow_15min_markets=os.getenv("ALLOW_15MIN_MARKETS", "false").lower() == "true",
     allow_hourly_markets=os.getenv("ALLOW_HOURLY_MARKETS", "true").lower() == "true",
-    # Order execution parameters
-    max_order_retries=int(os.getenv("MAX_ORDER_RETRIES", "1")),  # 1 = try FAK once, then GTC
-    retry_delay_seconds=float(os.getenv("RETRY_DELAY_SECONDS", "0.5")),
+    # Order execution - main toggle
+    use_gtc_only=os.getenv("USE_GTC_ONLY", "false").lower() == "true",
     price_slippage_tolerance=float(os.getenv("PRICE_SLIPPAGE_TOLERANCE", "0.14")),
+    # Advanced parameters (auto-configured, rarely need to change)
+    max_order_retries=int(os.getenv("MAX_ORDER_RETRIES", "1")),
+    retry_delay_seconds=float(os.getenv("RETRY_DELAY_SECONDS", "0.5")),
     use_gtc_fallback=os.getenv("USE_GTC_FALLBACK", "true").lower() == "true",
     order_timeout_seconds=int(os.getenv("ORDER_TIMEOUT_SECONDS", "10")),
     gtc_use_exact_target_price=os.getenv("GTC_USE_EXACT_TARGET_PRICE", "false").lower() == "true",
-    skip_price_fetch_for_speed=os.getenv("SKIP_PRICE_FETCH_FOR_SPEED", "true").lower() == "true"
+    skip_price_fetch_for_speed=os.getenv("SKIP_PRICE_FETCH_FOR_SPEED", "true").lower() == "true",
+    gtc_enforce_min_shares=os.getenv("GTC_ENFORCE_MIN_SHARES", "true").lower() == "true"
 )
 
 polymarket_config = PolymarketConfig()
