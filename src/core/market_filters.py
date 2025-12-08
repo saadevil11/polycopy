@@ -39,6 +39,11 @@ class MarketFilter:
         self.allow_15min_markets = os.getenv("ALLOW_15MIN_MARKETS", "false").lower() == "true"
         if self.allow_15min_markets:
             logger.warning("⚠️  15-minute markets ENABLED - high risk of slippage!")
+        
+        # Load hourly market setting
+        self.allow_hourly_markets = os.getenv("ALLOW_HOURLY_MARKETS", "true").lower() == "true"
+        if not self.allow_hourly_markets:
+            logger.warning("⚠️  Hourly markets DISABLED - will skip hourly interval markets")
     
     def load_default_patterns(self):
         """Load default market patterns"""
@@ -69,6 +74,11 @@ class MarketFilter:
                     logger.debug(f"❌ Skipping 15-minute market: {market_title}")
                     return False
                 
+                # Additional check: Exclude hourly markets (unless explicitly allowed)
+                if not self.allow_hourly_markets and self._is_hourly_market(market_title):
+                    logger.debug(f"❌ Skipping hourly market: {market_title}")
+                    return False
+                
                 logger.debug(f"✅ Filter match: {pattern}")
                 return True
                 
@@ -93,6 +103,29 @@ class MarketFilter:
         for pattern in fifteen_min_patterns:
             if re.search(pattern, market_title, re.IGNORECASE):
                 # Found a time range - this is a 15-minute market
+                return True
+        
+        return False
+    
+    def _is_hourly_market(self, market_title: str) -> bool:
+        """Check if market is an hourly interval market"""
+        import re
+        
+        # Patterns for hourly markets:
+        # "Bitcoin Up or Down - December 8, 10AM ET"
+        # "BTC Price - December 8, 3PM ET"
+        # "Ethereum Up or Down - December 8, 11PM ET"
+        # etc.
+        
+        hourly_patterns = [
+            r'\b\d{1,2}[AP]M\s+ET\b',  # Time like "10AM ET", "3PM ET"
+            r'\b\d{1,2}[AP]M\s+EST\b', # Time like "10AM EST", "3PM EST"
+            r'\b\d{1,2}[AP]M\s+EDT\b', # Time like "10AM EDT", "3PM EDT"
+        ]
+        
+        for pattern in hourly_patterns:
+            if re.search(pattern, market_title, re.IGNORECASE):
+                # Found an hourly time pattern - this is an hourly market
                 return True
         
         return False
