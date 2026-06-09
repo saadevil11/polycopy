@@ -53,8 +53,8 @@ class ManualTradeTest:
             funder_address = w3.to_checksum_address(funder_address)
             logger.info(f"Checking balance for: {funder_address}")
             
-            # USDC contract on Polygon
-            usdc_address = w3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            # pUSD collateral token on Polygon (CLOB V2 replaced USDC.e with pUSD)
+            usdc_address = w3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
             
             # ERC20 ABI for balance check
             erc20_abi = [

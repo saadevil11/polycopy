@@ -1,5 +1,5 @@
-# Core trading client
-py-clob-client==0.25.0
+# Core trading client (CLOB V2 - live since 2026-04-28)
+py-clob-client-v2>=1.0.1
 
 # Configuration and utilities
 python-dotenv>=1.0.0

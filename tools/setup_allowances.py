@@ -10,14 +10,14 @@ from loguru import logger
 
 load_dotenv()
 
-# Contract addresses on Polygon
-USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+# Contract addresses on Polygon (CLOB V2)
+USDC_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # pUSD collateral (V2)
 CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
-# Contracts to approve
+# Contracts to approve (V2 exchanges)
 EXCHANGE_ADDRESSES = [
-    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",  # Main exchange
-    "0xC5d563A36AE78145C45a50134d48A1215220f80a",  # Neg risk markets
+    "0xE111180000d2663C0091e4f400237545B87B996B",  # CTF Exchange V2
+    "0xe2222d279d744050d28e00520010520000310F59",  # Neg risk CTF Exchange V2
     "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",  # Neg risk adapter
 ]
 

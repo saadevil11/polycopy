@@ -9,12 +9,12 @@ from enum import Enum
 import requests
 from loguru import logger
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import (
-    ApiCreds, OrderArgs, MarketOrderArgs, OrderType, 
-    TradeParams, OpenOrderParams, BookParams
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.clob_types import (
+    ApiCreds, OrderArgs, MarketOrderArgs, OrderType,
+    TradeParams, OpenOrderParams, BookParams, OrderPayload
 )
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client_v2.order_builder.constants import BUY, SELL
 
 from src.core.config import polymarket_config, trading_config, bot_config
 from src.core.models import TraderTrade, MarketInfo, TradeSide, Position, AccountRestrictedException
@@ -58,22 +58,32 @@ class PolymarketClient:
         # Market info cache for speed optimization (saves 50-100ms per repeated market)
         self._market_cache: Dict[str, Dict] = {}
         self._market_cache_ttl = timedelta(hours=1)  # Cache for 1 hour
+
+        # Positions cache (Data API) - short TTL so risk checks stay current
+        self._positions_cache: Optional[List[Position]] = None
+        self._positions_cache_time: Optional[datetime] = None
+        self._positions_cache_ttl = timedelta(seconds=15)
+
+        # Per-token async locks so concurrent (non-blocking) order execution on
+        # the SAME token serializes - prevents two chases fighting/duplicating
+        # orders on one market. Different tokens still run in parallel.
+        self._token_locks: Dict[str, asyncio.Lock] = {}
         
     def initialize(self) -> bool:
         """Initialize the Polymarket client"""
         try:
             self._client = ClobClient(
                 host=self.config.clob_api_url,
-                key=self.config.private_key,
                 chain_id=self.config.chain_id,
+                key=self.config.private_key,
                 signature_type=self.config.signature_type,
                 funder=self.config.funder_address
             )
-            
+
             # Create or derive API credentials
             if not all([self.config.api_key, self.config.api_secret, self.config.api_passphrase]):
                 logger.info("Creating API credentials...")
-                creds = self._client.create_or_derive_api_creds()
+                creds = self._client.create_or_derive_api_key()
                 self._client.set_api_creds(creds)
                 self.config.api_key = creds.api_key
                 self.config.api_secret = creds.api_secret
@@ -207,29 +217,130 @@ class PolymarketClient:
             logger.error(f"Failed to get market info for token {token_id}: {e}")
             return None
     
-    def get_current_positions(self) -> List[Position]:
-        """Get current positions for the bot account"""
+    def get_current_positions(self, use_cache: bool = True) -> List[Position]:
+        """Get current open positions for the bot account.
+
+        Live positions are read from Polymarket's Data API
+        (https://data-api.polymarket.com/positions?user=<funder>), which reports
+        every outcome token the wallet currently holds. This is what powers the
+        MAX_POSITIONS limit and the duplicate-market guard in the risk manager.
+        """
         try:
-            # In dry run mode, return empty positions
+            # In dry run mode, there are no real positions to report
             if self.bot_config.dry_run:
                 logger.debug("[DRY RUN] Position tracking skipped")
                 return []
-            
-            # Position tracking in live mode is not critical for bot operation
-            # The risk manager tracks positions internally from executed trades
-            logger.debug("Position tracking skipped (not required for operation)")
-            return []
-            
+
+            # Serve from short-lived cache when possible
+            if use_cache and self._positions_cache is not None:
+                now = datetime.now()
+                if (self._positions_cache_time and
+                        now - self._positions_cache_time < self._positions_cache_ttl):
+                    logger.debug(f"Using cached positions ({len(self._positions_cache)} positions)")
+                    return self._positions_cache
+
+            funder_address = self.config.funder_address
+            if not funder_address:
+                logger.error("FUNDER_ADDRESS not configured - cannot fetch positions")
+                return []
+
+            response = self._session.get(
+                f"{self.config.data_api_url}/positions",
+                params={"user": funder_address, "sizeThreshold": 0.1},
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to get positions (HTTP {response.status_code})")
+                return self._positions_cache or []
+
+            raw_positions = response.json()
+            if not isinstance(raw_positions, list):
+                logger.warning(f"Unexpected positions response: {type(raw_positions)}")
+                return self._positions_cache or []
+
+            positions: List[Position] = []
+            for item in raw_positions:
+                try:
+                    size = float(item.get('size', 0) or 0)
+                    if size <= 0:
+                        continue  # Closed/empty position
+
+                    avg_price = float(item.get('avgPrice', 0) or 0)
+                    cur_price = float(item.get('curPrice', avg_price) or avg_price)
+
+                    # Data API reports cash P&L directly; fall back to a manual calc
+                    unrealized_pnl = item.get('cashPnl')
+                    if unrealized_pnl is None:
+                        unrealized_pnl = (cur_price - avg_price) * size
+                    else:
+                        unrealized_pnl = float(unrealized_pnl)
+
+                    market_id = item.get('conditionId', '') or ''
+                    token_id = item.get('asset', '') or ''
+                    title = item.get('title', '') or ''
+                    outcome = item.get('outcome', '') or ''
+
+                    market_info = MarketInfo(
+                        market_id=market_id,
+                        token_id=token_id,
+                        title=title,
+                        description='',
+                        outcome=outcome,
+                        current_price=cur_price,
+                        liquidity_usd=0.0,
+                        volume_24h_usd=0.0,
+                        is_active=True
+                    )
+
+                    # Holding an outcome token is always a long (BUY) position
+                    positions.append(Position(
+                        market_id=market_id,
+                        token_id=token_id,
+                        side=TradeSide.BUY,
+                        size=size,
+                        average_price=avg_price,
+                        current_price=cur_price,
+                        unrealized_pnl=unrealized_pnl,
+                        market_info=market_info
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to parse position entry: {e}")
+                    continue
+
+            # Update cache
+            self._positions_cache = positions
+            self._positions_cache_time = datetime.now()
+
+            logger.debug(f"Retrieved {len(positions)} open positions from Data API")
+            return positions
+
         except Exception as e:
             logger.error(f"Failed to get current positions: {e}")
+            return self._positions_cache or []
+
+    def get_open_orders(self, market_id: Optional[str] = None,
+                        token_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get the account's resting (open) orders via the V2 CLOB API.
+
+        Optionally filter by market (condition id) or token id (asset id).
+        """
+        try:
+            if self.bot_config.dry_run:
+                return []
+
+            params = None
+            if market_id or token_id:
+                params = OpenOrderParams(market=market_id, asset_id=token_id)
+
+            orders = self.client.get_open_orders(params) if params else self.client.get_open_orders()
+            if not orders:
+                return []
+            return list(orders)
+
+        except Exception as e:
+            logger.error(f"Failed to get open orders: {e}")
             return []
-            
-    def _get_positions_from_database(self) -> List[Position]:
-        """Get positions from database (simplified - not critical for bot operation)"""
-        # Position tracking is not essential for the bot to function
-        # The risk manager will track positions based on executed trades
-        logger.debug("Position tracking skipped (not required for operation)")
-        return []
     
     def get_account_balance(self, use_cache: bool = True) -> float:
         """Get current USDC balance (cached for speed)"""
@@ -271,8 +382,8 @@ class PolymarketClient:
             # Convert to checksum address
             funder_address = w3.to_checksum_address(funder_address)
             
-            # USDC contract on Polygon
-            usdc_address = w3.to_checksum_address("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+            # pUSD collateral token on Polygon (CLOB V2 replaced USDC.e with pUSD)
+            usdc_address = w3.to_checksum_address("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB")
             
             # ERC20 ABI for balance check
             erc20_abi = [
@@ -319,9 +430,10 @@ class PolymarketClient:
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 amount=amount_usd,
-                side=order_side
+                side=order_side,
+                order_type=OrderType.FAK
             )
-            
+
             signed_order = self.client.create_market_order(order_args)
             response = self.client.post_order(signed_order, OrderType.FAK)
             
@@ -391,7 +503,7 @@ class PolymarketClient:
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order"""
         try:
-            response = self.client.cancel(order_id)
+            response = self.client.cancel_order(OrderPayload(orderID=order_id))
             if response.get('success'):
                 logger.info(f"Order cancelled successfully: {order_id}")
                 return True
@@ -518,10 +630,292 @@ class PolymarketClient:
             details['failure_reasons'].append(f"GTC-only error: {str(e)}")
             return None, OrderExecutionResult.FAILED, details
     
+    def _get_tick_size(self, token_id: str) -> float:
+        """Get the market tick size (defaults to 0.01 / 1 cent on failure)."""
+        try:
+            tick = self.client.get_tick_size(token_id)
+            return float(tick)
+        except Exception as e:
+            logger.debug(f"Could not fetch tick size, defaulting to 0.01: {e}")
+            return 0.01
+
+    @staticmethod
+    def _round_to_tick(price: float, tick: float) -> float:
+        """Snap a price onto the market's tick grid."""
+        if tick <= 0:
+            return price
+        # Determine decimal places from the tick (0.01 -> 2, 0.001 -> 3, ...)
+        decimals = max(0, len(f"{tick:.10f}".rstrip('0').split('.')[-1]))
+        steps = round(price / tick)
+        return round(steps * tick, decimals)
+
+    def _get_best_price(self, token_id: str, side: TradeSide) -> Optional[float]:
+        """Get the best executable price for a side (ask for BUY, bid for SELL)."""
+        try:
+            # For a BUY we care about the best ask; for a SELL the best bid.
+            quote_side = BUY if side == TradeSide.BUY else SELL
+            data = self.client.get_price(token_id, quote_side)
+            if isinstance(data, dict):
+                raw = data.get('price', 0)
+            else:
+                raw = data
+            price = float(raw)
+            return price if price > 0 else None
+        except Exception as e:
+            logger.debug(f"Could not fetch best price: {e}")
+            return None
+
+    def _get_token_lock(self, token_id: str) -> asyncio.Lock:
+        """Return (creating if needed) the per-token execution lock."""
+        lock = self._token_locks.get(token_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._token_locks[token_id] = lock
+        return lock
+
+    def _find_open_order(self, order_id: str, token_id: str) -> Optional[Dict[str, Any]]:
+        """Return the open-order record if order_id is still resting, else None."""
+        try:
+            for o in self.get_open_orders(token_id=token_id):
+                oid = o.get('id') or o.get('orderID') or o.get('order_id')
+                if oid == order_id:
+                    return o
+        except Exception as e:
+            logger.debug(f"_find_open_order error: {e}")
+        return None
+
+    def _resolve_order_state(self, order_id: str, token_id: str) -> Tuple[str, float, float]:
+        """Resolve the true state of an order using two independent sources.
+
+        Returns (state, filled_size, price) where state is one of:
+          - 'FILLED' : size_matched > 0 (from get_order or the open-order record)
+          - 'OPEN'   : still present in the open-orders book, no fill
+          - 'CLOSED' : not open and no fill reported (cancelled / gone)
+
+        A filled GTC order is always reflected by get_order (size_matched persists),
+        so 'CLOSED' reliably means "not resting and never filled". This is the basis
+        for the no-duplicate guarantee in the weather chaser.
+        """
+        filled = 0.0
+        price = 0.0
+
+        status = self.get_order_status(order_id)  # get_order
+        if status:
+            try:
+                filled = float(status.get('size_matched', 0) or 0)
+            except (TypeError, ValueError):
+                filled = 0.0
+            try:
+                price = float(status.get('price', 0) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+
+        open_rec = self._find_open_order(order_id, token_id)
+        if open_rec is not None:
+            try:
+                of = float(open_rec.get('size_matched', 0) or 0)
+            except (TypeError, ValueError):
+                of = 0.0
+            filled = max(filled, of)
+            if price == 0:
+                try:
+                    price = float(open_rec.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    price = 0.0
+            if filled > 0:
+                return ('FILLED', filled, price)
+            return ('OPEN', 0.0, price)
+
+        # Not in the open-orders book
+        if filled > 0:
+            return ('FILLED', filled, price)
+        return ('CLOSED', 0.0, price)
+
+    def _cancel_and_confirm(self, order_id: str, token_id: str) -> Tuple[str, float, float]:
+        """Cancel an order and CONFIRM the outcome before the caller re-places.
+
+        Returns (result, filled_size, price) where result is one of:
+          - 'FILLED'    : the order filled (do NOT place a replacement)
+          - 'CANCELLED' : confirmed gone & unfilled (safe to place the next order)
+          - 'HOLD'      : could not confirm cancellation (still resting / ambiguous)
+                          -> caller MUST NOT place a replacement, to avoid duplicates
+        """
+        # It may have filled before we even try to cancel
+        state, filled, price = self._resolve_order_state(order_id, token_id)
+        if filled > 0:
+            return ('FILLED', filled, price)
+
+        self.cancel_order(order_id)
+
+        state, filled, price = self._resolve_order_state(order_id, token_id)
+        if filled > 0:
+            return ('FILLED', filled, price)
+        if state == 'CLOSED':
+            return ('CANCELLED', 0.0, price)
+
+        # Still shows OPEN -> one more cancel attempt
+        self.cancel_order(order_id)
+        state, filled, price = self._resolve_order_state(order_id, token_id)
+        if filled > 0:
+            return ('FILLED', filled, price)
+        if state == 'CLOSED':
+            return ('CANCELLED', 0.0, price)
+
+        # Still cannot confirm it's gone -> hold (never duplicate)
+        return ('HOLD', 0.0, price)
+
+    async def _place_weather_chase_order(
+        self,
+        token_id: str,
+        side: TradeSide,
+        amount_usd: float,
+        original_price: Optional[float],
+        details: dict
+    ) -> Tuple[Optional[str], OrderExecutionResult, Dict[str, Any]]:
+        """Weather mode: aggressively chase the price 1 tick ahead until filled.
+
+        Strategy (BUY example): the target filled at e.g. 0.73, so we place a GTC
+        limit buy 1 tick ahead at 0.74. A GTC buy priced at/above the ask fills
+        immediately, so resting unfilled means the ask has moved up. We then
+        CONFIRM-cancel the stale order and re-place 1 tick ahead of the new ask.
+        SELL mirrors this 1 tick *below* the best bid (hits the bid -> fills),
+        floored at 1 tick. Capped at 1 - tick (e.g. 0.99) for BUY.
+
+        DUPLICATE-PROOF INVARIANT: a replacement order is only ever placed after
+        `_cancel_and_confirm` returns 'CANCELLED' (positively gone & unfilled). If
+        cancellation cannot be confirmed ('HOLD') or the order filled, we stop and
+        never place another order. A per-token lock also prevents two concurrent
+        chases on the same market.
+        """
+        config = self.trading_config
+
+        # Serialize all execution for this token so concurrent trades on the same
+        # market cannot place competing/duplicate orders.
+        async with self._get_token_lock(token_id):
+            try:
+                tick = self._get_tick_size(token_id)
+                max_price = round(1.0 - tick, 10)   # e.g. 0.99 for 0.01 tick
+                min_price = tick                     # e.g. 0.01 for 0.01 tick
+
+                # Seed the reference from the target's fill price, else live market
+                reference = original_price if (original_price and original_price > 0) else None
+                if reference is None:
+                    reference = self._get_best_price(token_id, side)
+                if reference is None or reference <= 0:
+                    logger.error("❌ Weather: no price data available to chase")
+                    details['failure_reasons'].append("weather: no price data")
+                    return None, OrderExecutionResult.FAILED, details
+
+                active_order_id: Optional[str] = None
+                last_limit_price: Optional[float] = None
+
+                for chase in range(config.weather_max_chases):
+                    # --- 1. Clear any previous order BEFORE placing a new one ---
+                    if active_order_id is not None:
+                        result, filled, price = self._cancel_and_confirm(active_order_id, token_id)
+                        if result == 'FILLED':
+                            details['filled_amount'] = filled
+                            details['avg_price'] = price or last_limit_price or 0.0
+                            logger.success(f"✅ Weather: stale order actually filled ({filled:.2f} shares)")
+                            return active_order_id, OrderExecutionResult.SUCCESS, details
+                        if result == 'HOLD':
+                            # Couldn't confirm cancellation -> stop, do NOT duplicate
+                            logger.warning(f"🌦️  Weather: could not confirm cancel of {active_order_id}; "
+                                           f"leaving it resting and stopping (no duplicate)")
+                            return active_order_id, OrderExecutionResult.SUCCESS, details
+                        # CANCELLED -> safe to place the next order
+                        logger.info(f"🌦️  Weather: confirmed cancel of {active_order_id}")
+                        active_order_id = None
+
+                    # --- 2. Compute the chase price (1 tick ahead of reference) ---
+                    if side == TradeSide.BUY:
+                        limit_price = round(min(self._round_to_tick(reference, tick) + tick, max_price), 10)
+                    else:
+                        limit_price = round(max(self._round_to_tick(reference, tick) - tick, min_price), 10)
+
+                    # --- 3. Size (BUY: USD -> shares; SELL: already shares) ---
+                    if side == TradeSide.SELL:
+                        size = amount_usd
+                    else:
+                        size = amount_usd / limit_price if limit_price > 0 else 0
+                    if config.gtc_enforce_min_shares and size < 5.0:
+                        logger.info(f"📈 Weather: bumping size to 5-share minimum (was {size:.2f})")
+                        size = 5.0
+
+                    logger.info(
+                        f"🌦️  Weather chase {chase + 1}/{config.weather_max_chases}: "
+                        f"{side.value} {size:.2f} shares @ ${limit_price:.4f} "
+                        f"(1 tick ahead of ${reference:.4f}, tick={tick})"
+                    )
+
+                    # --- 4. Place the order ---
+                    order_id = self.place_limit_order(token_id, side, size, limit_price)
+                    if not order_id:
+                        logger.error("❌ Weather: order placement failed")
+                        details['failure_reasons'].append(f"weather chase {chase + 1}: placement failed")
+                        new_ref = self._get_best_price(token_id, side)
+                        if new_ref:
+                            reference = new_ref
+                            continue
+                        return None, OrderExecutionResult.FAILED, details
+
+                    active_order_id = order_id
+                    last_limit_price = limit_price
+
+                    # --- 5. Wait, then verify fill from two sources ---
+                    await asyncio.sleep(config.weather_fill_wait_seconds)
+                    state, filled, price = self._resolve_order_state(order_id, token_id)
+                    if filled > 0:
+                        details['filled_amount'] = filled
+                        details['avg_price'] = price or limit_price
+                        logger.success(f"✅ Weather order filled: {filled:.2f} shares @ ${details['avg_price']:.4f}")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+
+                    # --- 6. Not filled: decide whether to keep resting or chase ---
+                    new_ref = self._get_best_price(token_id, side)
+                    if new_ref is None:
+                        logger.info("🌦️  Weather: no fresh quote - leaving order resting")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+
+                    # Order still at/ahead of the market -> it will fill; keep it.
+                    if side == TradeSide.BUY and limit_price >= new_ref:
+                        logger.info(f"🌦️  Weather: order ${limit_price:.4f} still >= ask ${new_ref:.4f}, leaving resting")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+                    if side == TradeSide.SELL and limit_price <= new_ref:
+                        logger.info(f"🌦️  Weather: order ${limit_price:.4f} still <= bid ${new_ref:.4f}, leaving resting")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+
+                    # Hit the cap/floor -> stop chasing.
+                    if side == TradeSide.BUY and limit_price >= max_price:
+                        logger.warning(f"🌦️  Weather: reached price cap ${max_price:.4f}, leaving order resting")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+                    if side == TradeSide.SELL and limit_price <= min_price:
+                        logger.warning(f"🌦️  Weather: reached price floor ${min_price:.4f}, leaving order resting")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+
+                    # Price moved away -> loop (top of loop confirm-cancels first).
+                    reference = new_ref
+
+                # Exhausted chase budget with an order still resting.
+                if active_order_id is not None:
+                    logger.warning(f"🌦️  Weather: exhausted {config.weather_max_chases} chases, "
+                                   f"order {active_order_id} left resting")
+                    return active_order_id, OrderExecutionResult.SUCCESS, details
+
+                details['failure_reasons'].append("weather: exhausted chases, no order")
+                return None, OrderExecutionResult.FAILED, details
+
+            except AccountRestrictedException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Weather chase error: {e}")
+                details['failure_reasons'].append(f"weather error: {str(e)}")
+                return None, OrderExecutionResult.FAILED, details
+
     async def place_order_with_retry(
-        self, 
-        token_id: str, 
-        side: TradeSide, 
+        self,
+        token_id: str,
+        side: TradeSide,
         amount_usd: float,
         original_price: Optional[float] = None
     ) -> Tuple[Optional[str], OrderExecutionResult, Dict[str, Any]]:
@@ -543,7 +937,13 @@ class PolymarketClient:
         }
         
         logger.debug(f"🎯 Order execution: {side.value} ${amount_usd:.2f}")
-        
+
+        # Weather mode takes priority: aggressively chase the price 1 tick ahead.
+        if config.use_weather_mode:
+            logger.info("🌦️  Using WEATHER mode (chase price 1 tick ahead until filled)")
+            details['strategy_used'] = 'WEATHER'
+            return await self._place_weather_chase_order(token_id, side, amount_usd, original_price, details)
+
         # Check if we should use GTC-only mode (skip FAK entirely)
         if config.use_gtc_only:
             logger.info("🎯 Using GTC-only mode (skipping FAK for more accurate % copying)")

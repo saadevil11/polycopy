@@ -33,24 +33,36 @@ FUNDER_ADDRESS=0xYourWalletAddress
 TARGET_TRADER_ADDRESS=0xTraderYouWantToCopy
 ```
 
-### 3. Set Up Token Allowances (MetaMask/Hardware Wallet Users Only)
+### 3. CLOB V2 collateral: use pUSD, not USDC.e
 
-If you're using MetaMask or a hardware wallet, run this once:
+As of the **CLOB V2 migration (live 2026-04-28)**, Polymarket's collateral token
+changed from USDC.e to **pUSD** (`0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`).
+The bot now reads your **pUSD** balance, so:
+
+- Convert/deposit funds as **pUSD** via Polymarket. A wallet holding only the old
+  USDC.e will show a `$0` balance and place no trades.
+- V2 also uses new on-chain exchange contracts, so **old USDC.e allowances do not
+  carry over** — see step 4.
+
+### 4. Set Up Token Allowances (MetaMask/Hardware Wallet Users Only)
+
+If you're using MetaMask or a hardware wallet, run this once. It approves the **V2**
+exchange contracts to spend your **pUSD**:
 
 ```bash
 python setup_allowances.py
 ```
 
-*Skip this step if you're using an email/Magic wallet.*
+*Skip this step if you're using an email/Magic wallet (allowances are handled for you).*
 
-### 4. Test in Dry Run Mode
+### 5. Test in Dry Run Mode
 
 ```bash
 # Test without real trades
 DRY_RUN=true python start_bot.py
 ```
 
-### 5. Start Live Trading
+### 6. Start Live Trading
 
 ```bash
 # Start live trading

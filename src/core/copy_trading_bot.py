@@ -55,6 +55,10 @@ class PolymarketCopyTradingBot:
         
         # In-memory cache for executed trades (speed optimization)
         self.executed_trades_cache: Set[str] = set()
+
+        # Background replication tasks (non-blocking dispatch). Held so they are
+        # not garbage-collected mid-flight; discarded on completion.
+        self._replication_tasks: Set[asyncio.Task] = set()
         
     async def initialize(self) -> bool:
         """Initialize the bot"""
@@ -239,14 +243,35 @@ class PolymarketCopyTradingBot:
             if self.risk_manager.should_stop_trading():
                 logger.warning("Risk limits exceeded, skipping trade")
                 return
-            
-            # Replicate the trade
+
+            # Replicate the trade as a NON-BLOCKING background task so that a slow
+            # order (e.g. weather-mode chasing, which can take several seconds while
+            # cancelling/replacing) does not stall ingestion of the target's other
+            # trades. Dedup (executed_trades_cache) already ran synchronously above,
+            # so a duplicate WS message cannot spawn a second task for the same
+            # trade. Per-token serialization happens inside the client.
+            task = asyncio.create_task(self._replicate_and_record(trade))
+            self._replication_tasks.add(task)
+            task.add_done_callback(self._replication_tasks.discard)
+
+        except Exception as e:
+            logger.error(f"Error dispatching new trade: {e}")
+            self.errors.append(f"Error dispatching trade: {str(e)}")
+
+    async def _replicate_and_record(self, trade: TraderTrade):
+        """Replicate a single trade and record the outcome.
+
+        Runs as its own task (see _on_new_trade) so multiple markets can be
+        copied concurrently. Each task owns its own error handling because
+        exceptions raised here do NOT propagate back to _on_new_trade.
+        """
+        try:
             copy_trade = await self.trade_replicator.replicate_trade(trade)
-            
+
             if copy_trade:
                 # Save copy trade to database
                 self.database.save_copy_trade(copy_trade)
-                
+
                 # Update statistics
                 if copy_trade.status.value == "executed":
                     self.successful_trades += 1
@@ -258,7 +283,7 @@ class PolymarketCopyTradingBot:
                     logger.error(f"Failed to copy trade: {copy_trade.error_message}")
                 elif copy_trade.status.value == "skipped":
                     logger.info(f"Trade skipped: {copy_trade.error_message}")
-            
+
         except AccountRestrictedException as e:
             # Critical error - account is restricted
             logger.critical("=" * 80)
@@ -278,23 +303,23 @@ class PolymarketCopyTradingBot:
             logger.critical("3. Verify your account is fully compliant with Polymarket's terms")
             logger.critical("4. Consider using a different wallet address that isn't restricted")
             logger.critical("=" * 80)
-            
+
             # Set the restriction flag
             self.account_restricted = True
-            
+
             # Add to errors
             self.errors.append(f"CRITICAL: Account restricted - {e.restriction_type}: {e.message}")
             self.failed_trades += 1
-            
+
             # Stop the bot
             logger.critical("Stopping the bot due to account restriction...")
             self.running = False
-            
+
         except Exception as e:
             logger.error(f"Error processing new trade: {e}")
             self.errors.append(f"Error processing trade: {str(e)}")
             self.failed_trades += 1
-    
+
     async def _handle_merge_action(self, merge_action: dict):
         """Handle merge action from target trader"""
         try:

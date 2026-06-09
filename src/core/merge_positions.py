@@ -13,7 +13,7 @@ class PositionMerger:
     """Handle merging of YES/NO positions back to USDC"""
     
     CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"  # Polygon mainnet
-    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC on Polygon
+    USDC_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # pUSD collateral (CLOB V2)
     
     # ConditionalTokens ABI for merge and redeem functions
     CONDITIONAL_TOKENS_ABI = [

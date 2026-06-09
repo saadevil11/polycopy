@@ -123,16 +123,17 @@ class TradeReplicator:
             # Apply position size limits
             copy_amount = min(base_amount, self.config.max_position_size_usd)
             
-            # Apply minimum size check - but skip for GTC-only mode since GTC handles its own minimums
-            if not self.config.use_gtc_only:
+            # Apply minimum size check - but skip for GTC-only and weather modes,
+            # since both place GTC orders that enforce their own 5-share minimum.
+            if not self.config.use_gtc_only and not self.config.use_weather_mode:
                 copy_amount = max(copy_amount, self.config.min_position_size_usd)
-                
+
                 # If the amount is below minimum, don't trade
                 if copy_amount < self.config.min_position_size_usd:
                     return 0.0, 0.0
             else:
-                # In GTC-only mode, let the 5-share minimum in GTC logic handle minimums
-                # Don't enforce USD minimum here
+                # GTC-only / weather mode: let the 5-share minimum in the order
+                # placement logic handle minimums. Don't enforce USD minimum here.
                 pass
             
             # Calculate size based on the original trade's price

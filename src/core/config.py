@@ -46,7 +46,12 @@ class TradingConfig:
     gtc_use_exact_target_price: bool = False      # If True, GTC uses exact target price (no slippage)
     skip_price_fetch_for_speed: bool = True       # Skip fetching current price to execute faster
     gtc_enforce_min_shares: bool = True           # Ensure GTC orders meet 5-share minimum
-    
+
+    # Weather mode (aggressive GTC price-chasing for weather markets)
+    use_weather_mode: bool = False                # If True, chase the price 1 tick ahead until filled
+    weather_max_chases: int = 5                   # Max number of cancel-and-replace attempts
+    weather_fill_wait_seconds: float = 2.0        # How long to wait for a chase order to fill before re-checking
+
     def __post_init__(self):
         if self.excluded_markets is None:
             self.excluded_markets = []
@@ -57,6 +62,7 @@ class PolymarketConfig:
     # API endpoints
     clob_api_url: str = "https://clob.polymarket.com"
     gamma_api_url: str = "https://gamma-api.polymarket.com"
+    data_api_url: str = "https://data-api.polymarket.com"
     websocket_url: str = "wss://ws-live-data.polymarket.com"
     
     # Network
@@ -127,7 +133,11 @@ trading_config = TradingConfig(
     order_timeout_seconds=int(os.getenv("ORDER_TIMEOUT_SECONDS", "10")),
     gtc_use_exact_target_price=os.getenv("GTC_USE_EXACT_TARGET_PRICE", "false").lower() == "true",
     skip_price_fetch_for_speed=os.getenv("SKIP_PRICE_FETCH_FOR_SPEED", "true").lower() == "true",
-    gtc_enforce_min_shares=os.getenv("GTC_ENFORCE_MIN_SHARES", "true").lower() == "true"
+    gtc_enforce_min_shares=os.getenv("GTC_ENFORCE_MIN_SHARES", "true").lower() == "true",
+    # Weather mode
+    use_weather_mode=os.getenv("USE_WEATHER_MODE", "false").lower() == "true",
+    weather_max_chases=int(os.getenv("WEATHER_MAX_CHASES", "5")),
+    weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0"))
 )
 
 polymarket_config = PolymarketConfig()

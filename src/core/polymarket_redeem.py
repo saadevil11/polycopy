@@ -18,17 +18,17 @@ class PolymarketRedeemer:
     Handles redemption of winnings through Polymarket's actual system
     """
     
-    # Polymarket CTF Exchange contract (handles claims)
-    CTF_EXCHANGE_ADDRESS = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"  # Polygon mainnet
-    
-    # Conditional Tokens Framework contract
+    # Polymarket CTF Exchange V2 contract (handles claims)
+    CTF_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"  # Polygon mainnet (V2)
+
+    # Conditional Tokens Framework contract (unchanged in V2)
     CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"  # Polygon mainnet
-    
-    # USDC on Polygon
-    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-    
+
+    # pUSD collateral token on Polygon (CLOB V2 replaced USDC.e with pUSD)
+    USDC_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+
     # Polymarket Neg Risk Adapter (for some markets)
-    NEG_RISK_ADAPTER_ADDRESS = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+    NEG_RISK_ADAPTER_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
     
     # Gnosis Safe contracts
     GNOSIS_SAFE_PROXY_FACTORY = "0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2"  # Gnosis Safe Proxy Factory
