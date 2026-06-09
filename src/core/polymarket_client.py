@@ -361,18 +361,52 @@ class PolymarketClient:
             
             # Get real balance from the client
             logger.info("Getting account USDC balance...")
-            
+
             # Use Web3 to get USDC balance directly from blockchain
+            import os
             from web3 import Web3
-            
-            # Polygon RPC
-            rpc_url = "https://polygon-rpc.com"
-            w3 = Web3(Web3.HTTPProvider(rpc_url))
-            
-            if not w3.is_connected():
-                logger.error("Could not connect to Polygon network")
+
+            # Polygon RPC endpoints. A custom endpoint can be supplied via
+            # POLYGON_RPC_URL (recommended for cloud hosts where the public RPC
+            # is rate-limited/blocked). We then fall back through several public
+            # endpoints so a single dead RPC doesn't break balance reads.
+            rpc_candidates = []
+            custom_rpc = os.getenv("POLYGON_RPC_URL", "").strip()
+            if custom_rpc:
+                rpc_candidates.append(custom_rpc)
+            rpc_candidates.extend([
+                "https://polygon-rpc.com",
+                "https://polygon-bor-rpc.publicnode.com",
+                "https://rpc.ankr.com/polygon",
+                "https://1rpc.io/matic",
+                "https://polygon.llamarpc.com",
+            ])
+
+            w3 = None
+            for rpc_url in rpc_candidates:
+                try:
+                    candidate = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                    if candidate.is_connected():
+                        w3 = candidate
+                        logger.debug(f"Connected to Polygon RPC: {rpc_url}")
+                        break
+                    else:
+                        logger.warning(f"Polygon RPC not responding: {rpc_url}")
+                except Exception as rpc_err:
+                    logger.warning(f"Polygon RPC failed ({rpc_url}): {rpc_err}")
+
+            if w3 is None:
+                logger.error(
+                    "Could not connect to any Polygon RPC. Set POLYGON_RPC_URL to a "
+                    "reliable endpoint (e.g. an Alchemy/Infura/QuickNode URL). "
+                    "Returning cached balance if available."
+                )
+                # Prefer a stale cached balance over 0.0 so trading isn't blocked
+                # by a transient RPC outage.
+                if self._balance_cache is not None:
+                    return self._balance_cache
                 return 0.0
-            
+
             # Get funder address
             funder_address = self.config.funder_address
             if not funder_address:
@@ -420,8 +454,13 @@ class PolymarketClient:
             
         except Exception as e:
             logger.error(f"Failed to get account balance: {e}")
+            # Fall back to last known balance on transient errors rather than
+            # reporting $0 (which would otherwise halt trading).
+            if self._balance_cache is not None:
+                logger.warning(f"Returning last known balance: ${self._balance_cache:.2f}")
+                return self._balance_cache
             return 0.0
-    
+
     def place_market_order(self, token_id: str, side: TradeSide, amount_usd: float) -> Optional[str]:
         """Place a market order"""
         try:
