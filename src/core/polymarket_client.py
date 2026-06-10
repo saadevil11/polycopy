@@ -869,6 +869,54 @@ class PolymarketClient:
         # Still cannot confirm it's gone -> hold (never duplicate)
         return ('HOLD', 0.0, price)
 
+    def _cancel_and_capture(self, order_id: str, token_id: str) -> Tuple[bool, float, float]:
+        """Cancel an order and report how much it filled, confirming it's gone.
+
+        Unlike _cancel_and_confirm (which short-circuits to 'FILLED' on any
+        partial and never cancels the remainder), this ALWAYS cancels the
+        unfilled remainder and returns the order's final matched size, so the
+        weather chaser can chase the still-unfilled shares.
+
+        Returns (confirmed_gone, filled_size, price):
+          - confirmed_gone=True  : order is no longer resting; `filled_size` is
+            its final matched amount (safe to place a replacement for the rest)
+          - confirmed_gone=False : could NOT confirm removal (HOLD) -> caller
+            MUST NOT place a replacement, to avoid duplicates
+        """
+        def _matched() -> Tuple[float, float]:
+            status = self.get_order_status(order_id)
+            f = p = 0.0
+            if status:
+                try:
+                    f = float(status.get('size_matched', 0) or 0)
+                except (TypeError, ValueError):
+                    f = 0.0
+                try:
+                    p = float(status.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    p = 0.0
+            return f, p
+
+        filled, price = _matched()
+        # Already gone (fully filled or closed)?
+        if self._find_open_order(order_id, token_id) is None:
+            return (True, filled, price)
+
+        # Cancel the (possibly partially filled) order, then confirm + re-read.
+        self.cancel_order(order_id)
+        if self._find_open_order(order_id, token_id) is None:
+            filled, price = _matched()
+            return (True, filled, price)
+
+        # One more attempt
+        self.cancel_order(order_id)
+        if self._find_open_order(order_id, token_id) is None:
+            filled, price = _matched()
+            return (True, filled, price)
+
+        # Still resting -> cannot confirm; hold (never duplicate)
+        return (False, filled, price)
+
     async def _place_weather_chase_order(
         self,
         token_id: str,
@@ -912,25 +960,59 @@ class PolymarketClient:
                     return None, OrderExecutionResult.FAILED, details
 
                 active_order_id: Optional[str] = None
+                last_order_id: Optional[str] = None
                 last_limit_price: Optional[float] = None
+                total_filled = 0.0       # cumulative shares filled across all chases
+                last_fill_price = 0.0
+
+                # Target quantity in SHARES (copy intent). For SELL the amount is
+                # already a share count; for BUY convert the USD budget at the
+                # seed price. We chase until total_filled reaches this.
+                if side == TradeSide.SELL:
+                    target_shares = amount_usd
+                else:
+                    target_shares = (amount_usd / reference) if reference > 0 else 0.0
+                if target_shares <= 0:
+                    details['failure_reasons'].append("weather: invalid target size")
+                    return None, OrderExecutionResult.FAILED, details
+
+                EPS = 0.01            # shares: treat a remainder <= this as complete
+                MIN_NOTIONAL = 1.0    # $: don't chase a remainder smaller than this
+
+                def _finish(order_id, label):
+                    """Record fill stats and pick a result code."""
+                    details['filled_amount'] = total_filled
+                    details['avg_price'] = last_fill_price or last_limit_price or 0.0
+                    if total_filled >= target_shares - EPS:
+                        logger.success(f"✅ Weather: filled {total_filled:.2f}/{target_shares:.2f} shares "
+                                       f"@ ${details['avg_price']:.4f} ({label})")
+                        return order_id or last_order_id, OrderExecutionResult.SUCCESS, details
+                    if total_filled > EPS:
+                        logger.warning(f"🌦️  Weather: partial {total_filled:.2f}/{target_shares:.2f} shares ({label})")
+                        return order_id or last_order_id, OrderExecutionResult.PARTIAL_FILL, details
+                    details['failure_reasons'].append(f"weather: no fill ({label})")
+                    return None, OrderExecutionResult.FAILED, details
 
                 for chase in range(config.weather_max_chases):
-                    # --- 1. Clear any previous order BEFORE placing a new one ---
+                    remaining = target_shares - total_filled
+                    if remaining <= EPS or remaining * reference < MIN_NOTIONAL:
+                        break
+
+                    # --- 1. Reclaim any prior resting order (capture its fill) ---
                     if active_order_id is not None:
-                        result, filled, price = self._cancel_and_confirm(active_order_id, token_id)
-                        if result == 'FILLED':
-                            details['filled_amount'] = filled
-                            details['avg_price'] = price or last_limit_price or 0.0
-                            logger.success(f"✅ Weather: stale order actually filled ({filled:.2f} shares)")
-                            return active_order_id, OrderExecutionResult.SUCCESS, details
-                        if result == 'HOLD':
-                            # Couldn't confirm cancellation -> stop, do NOT duplicate
+                        confirmed, filled, price = self._cancel_and_capture(active_order_id, token_id)
+                        total_filled += filled
+                        if price:
+                            last_fill_price = price
+                        if not confirmed:
+                            # Couldn't confirm cancellation -> stop, do NOT duplicate.
                             logger.warning(f"🌦️  Weather: could not confirm cancel of {active_order_id}; "
                                            f"leaving it resting and stopping (no duplicate)")
-                            return active_order_id, OrderExecutionResult.SUCCESS, details
-                        # CANCELLED -> safe to place the next order
-                        logger.info(f"🌦️  Weather: confirmed cancel of {active_order_id}")
+                            return _finish(active_order_id, "cancel-unconfirmed")
                         active_order_id = None
+                        remaining = target_shares - total_filled
+                        if remaining <= EPS or remaining * reference < MIN_NOTIONAL:
+                            break
 
                     # --- 2. Compute the chase price (1 tick ahead of reference) ---
                     if side == TradeSide.BUY:
@@ -938,19 +1020,18 @@ class PolymarketClient:
                     else:
                         limit_price = round(max(self._round_to_tick(reference, tick) - tick, min_price), 10)
 
-                    # --- 3. Size (BUY: USD -> shares; SELL: already shares) ---
-                    if side == TradeSide.SELL:
-                        size = amount_usd
-                    else:
-                        size = amount_usd / limit_price if limit_price > 0 else 0
-                    if config.gtc_enforce_min_shares and size < 5.0:
+                    # --- 3. Size = remaining shares (meet 5-share min only on the
+                    #        very first order, so we don't overbuy on remainders) ---
+                    size = remaining
+                    if config.gtc_enforce_min_shares and total_filled <= EPS and size < 5.0:
                         logger.info(f"📈 Weather: bumping size to 5-share minimum (was {size:.2f})")
                         size = 5.0
 
                     logger.info(
                         f"🌦️  Weather chase {chase + 1}/{config.weather_max_chases}: "
                         f"{side.value} {size:.2f} shares @ ${limit_price:.4f} "
-                        f"(1 tick ahead of ${reference:.4f}, tick={tick})"
+                        f"(1 tick ahead of ${reference:.4f}, tick={tick}; "
+                        f"filled {total_filled:.2f}/{target_shares:.2f})"
                     )
 
                     # --- 4. Place the order ---
@@ -962,53 +1043,63 @@ class PolymarketClient:
                         if new_ref:
                             reference = new_ref
                             continue
-                        return None, OrderExecutionResult.FAILED, details
+                        break
 
                     active_order_id = order_id
+                    last_order_id = order_id
                     last_limit_price = limit_price
 
-                    # --- 5. Wait, then verify fill from two sources ---
+                    # --- 5. Wait, then check how much THIS order filled ---
                     await asyncio.sleep(config.weather_fill_wait_seconds)
-                    state, filled, price = self._resolve_order_state(order_id, token_id)
-                    if filled > 0:
-                        details['filled_amount'] = filled
-                        details['avg_price'] = price or limit_price
-                        logger.success(f"✅ Weather order filled: {filled:.2f} shares @ ${details['avg_price']:.4f}")
-                        return order_id, OrderExecutionResult.SUCCESS, details
+                    status = self.get_order_status(order_id)
+                    filled_now = 0.0
+                    if status:
+                        try:
+                            filled_now = float(status.get('size_matched', 0) or 0)
+                        except (TypeError, ValueError):
+                            filled_now = 0.0
+                        try:
+                            sp = float(status.get('price', 0) or 0)
+                            if sp:
+                                last_fill_price = sp
+                        except (TypeError, ValueError):
+                            pass
 
-                    # --- 6. Not filled: decide whether to keep resting or chase ---
+                    if filled_now >= size - EPS:
+                        # This order fully filled -> overall target reached.
+                        total_filled += filled_now
+                        active_order_id = None
+                        return _finish(order_id, "filled")
+
+                    # --- 6. Partial/none: refresh the reference and loop. The top
+                    #        of the loop reclaims the remainder and re-prices it
+                    #        1 tick ahead of the new market (this is the chase). ---
                     new_ref = self._get_best_price(token_id, side)
-                    if new_ref is None:
-                        logger.info("🌦️  Weather: no fresh quote - leaving order resting")
-                        return order_id, OrderExecutionResult.SUCCESS, details
+                    if new_ref is not None:
+                        reference = new_ref
 
-                    # Order still at/ahead of the market -> it will fill; keep it.
-                    if side == TradeSide.BUY and limit_price >= new_ref:
-                        logger.info(f"🌦️  Weather: order ${limit_price:.4f} still >= ask ${new_ref:.4f}, leaving resting")
-                        return order_id, OrderExecutionResult.SUCCESS, details
-                    if side == TradeSide.SELL and limit_price <= new_ref:
-                        logger.info(f"🌦️  Weather: order ${limit_price:.4f} still <= bid ${new_ref:.4f}, leaving resting")
-                        return order_id, OrderExecutionResult.SUCCESS, details
-
-                    # Hit the cap/floor -> stop chasing.
-                    if side == TradeSide.BUY and limit_price >= max_price:
-                        logger.warning(f"🌦️  Weather: reached price cap ${max_price:.4f}, leaving order resting")
-                        return order_id, OrderExecutionResult.SUCCESS, details
-                    if side == TradeSide.SELL and limit_price <= min_price:
-                        logger.warning(f"🌦️  Weather: reached price floor ${min_price:.4f}, leaving order resting")
-                        return order_id, OrderExecutionResult.SUCCESS, details
-
-                    # Price moved away -> loop (top of loop confirm-cancels first).
-                    reference = new_ref
-
-                # Exhausted chase budget with an order still resting.
+                # --- Exhausted chases (or remainder too small). Leave the last
+                #     order resting to catch late liquidity; report what filled. ---
                 if active_order_id is not None:
-                    logger.warning(f"🌦️  Weather: exhausted {config.weather_max_chases} chases, "
-                                   f"order {active_order_id} left resting")
-                    return active_order_id, OrderExecutionResult.SUCCESS, details
+                    status = self.get_order_status(active_order_id)
+                    if status:
+                        try:
+                            total_filled += float(status.get('size_matched', 0) or 0)
+                        except (TypeError, ValueError):
+                            pass
+                        try:
+                            sp = float(status.get('price', 0) or 0)
+                            if sp:
+                                last_fill_price = sp
+                        except (TypeError, ValueError):
+                            pass
+                    if total_filled < target_shares - EPS:
+                        logger.warning(f"🌦️  Weather: exhausted {config.weather_max_chases} chases; "
+                                       f"{total_filled:.2f}/{target_shares:.2f} filled, remainder left "
+                                       f"resting as order {active_order_id}")
+                    return _finish(active_order_id, "exhausted/resting")
 
-                details['failure_reasons'].append("weather: exhausted chases, no order")
-                return None, OrderExecutionResult.FAILED, details
+                return _finish(last_order_id, "exhausted")
 
             except AccountRestrictedException:
                 raise
