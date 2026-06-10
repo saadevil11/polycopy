@@ -73,7 +73,16 @@ class PolymarketCopyTradingBot:
             if not self.polymarket_client.initialize():
                 logger.error("Failed to initialize Polymarket client")
                 return False
-            
+
+            # Preflight region check - fail fast if Polymarket geo-blocks this
+            # IP/region, instead of waiting for the first copied trade to 403.
+            # (Skipped in dry-run, where no real orders are placed.)
+            if not self.config.dry_run:
+                if not self.polymarket_client.check_region_allowed():
+                    logger.error("Region preflight failed - trading is geo-blocked from here. "
+                                 "Aborting startup.")
+                    return False
+
             # Initialize Polymarket redeemer if enabled
             if self.config.auto_redeem_enabled:
                 try:

@@ -114,7 +114,60 @@ class PolymarketClient:
         if not self._client:
             raise RuntimeError("Client not initialized. Call initialize() first.")
         return self._client
-    
+
+    def check_region_allowed(self, timeout: float = 10.0) -> bool:
+        """Preflight check: will Polymarket accept orders from this IP/region?
+
+        Polymarket enforces a geo-block at the API edge that rejects order
+        placement with HTTP 403 "Trading restricted in your region" - and it's
+        applied *before* authentication, so we can detect it with an
+        unauthenticated probe (no real order, no credentials needed).
+
+        - Blocked region -> 403 with a geo-block message  -> returns False
+        - Allowed region  -> 401/400/etc (auth/validation) -> returns True
+
+        On any network error we return True (don't block startup on a hiccup);
+        real order placement still has its own geo-block handling as a backstop.
+        """
+        import urllib.request
+        import urllib.error
+
+        url = f"{self.config.clob_api_url}/order"
+        headers = {
+            "Content-Type": "application/json",
+            # Browser-like headers so Cloudflare lets the probe reach the geo
+            # check instead of returning its own bot block (error 1010).
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0 Safari/537.36"),
+            "Origin": "https://polymarket.com",
+            "Referer": "https://polymarket.com/",
+        }
+        req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            status, body = resp.status, resp.read()[:300].decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            status, body = e.code, e.read()[:300].decode("utf-8", "replace")
+        except Exception as e:
+            logger.warning(f"Region preflight could not complete ({e}); proceeding anyway.")
+            return True
+
+        blocked = status == 403 and (
+            "geoblock" in body.lower() or "restricted in your region" in body.lower()
+        )
+        if blocked:
+            logger.critical("⛔ GEO-BLOCKED: Polymarket refuses trading from this IP/region.")
+            logger.critical("   Preflight order endpoint returned 403 'restricted in your region'.")
+            logger.critical("   Order placement WILL fail here. Run the bot from a supported region")
+            logger.critical("   (e.g. a VPN/proxy or host in an allowed jurisdiction).")
+            return False
+
+        logger.success(
+            f"✅ Region preflight OK - trading not geo-blocked (probe returned {status})."
+        )
+        return True
+
     def get_trader_recent_trades(self, trader_address: str, limit: int = 100) -> List[TraderTrade]:
         """Get recent trades for a specific trader"""
         try:
