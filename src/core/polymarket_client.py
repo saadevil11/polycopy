@@ -535,7 +535,20 @@ class PolymarketClient:
                     f"Account is in closed-only mode: {error_str}",
                     restriction_type="closed_only"
                 )
-            
+
+            # Check for regional geo-block (403). This is persistent and applies
+            # to every order, so there's no point retrying - stop cleanly with a
+            # single clear message instead of hammering the API.
+            if "geoblock" in error_str.lower() or "restricted in your region" in error_str.lower():
+                logger.critical("⛔ GEO-BLOCKED: Polymarket is refusing orders from this IP/region")
+                logger.critical("The CLOB API returned 403 'Trading restricted in your region'")
+                logger.critical("Run the bot from a supported region (e.g. via a VPN/proxy in an")
+                logger.critical("allowed jurisdiction). Balance reads work; only order placement is blocked.")
+                raise AccountRestrictedException(
+                    f"Trading geo-blocked in this region: {error_str}",
+                    restriction_type="geoblock"
+                )
+
             logger.error(f"Failed to place limit order: {e}")
             return None
     

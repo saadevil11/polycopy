@@ -70,9 +70,14 @@ class TradeReplicator:
                 
             # Market filter already checked by WebSocket monitor - skip duplicate check
             
-            # Check market liquidity if market info is available
+            # Check market liquidity if market info is available.
+            # NOTE: WebSocket trades carry liquidity_usd=0 because the live feed
+            # doesn't include liquidity data, so a 0 means "unknown", not "no
+            # liquidity". Only enforce the minimum when we have a real (>0)
+            # figure - otherwise every WS-sourced trade would be rejected.
             if trade.market_info:
-                if trade.market_info.liquidity_usd < self.config.min_market_liquidity_usd:
+                if (trade.market_info.liquidity_usd > 0
+                        and trade.market_info.liquidity_usd < self.config.min_market_liquidity_usd):
                     logger.warning(f"Market liquidity too low: ${trade.market_info.liquidity_usd}")
                     return False
                 
