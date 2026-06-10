@@ -878,44 +878,47 @@ class PolymarketClient:
         weather chaser can chase the still-unfilled shares.
 
         Returns (confirmed_gone, filled_size, price):
-          - confirmed_gone=True  : order is no longer resting; `filled_size` is
-            its final matched amount (safe to place a replacement for the rest)
-          - confirmed_gone=False : could NOT confirm removal (HOLD) -> caller
-            MUST NOT place a replacement, to avoid duplicates
+          - confirmed_gone=True  : order is gone from the book AND we have a
+            reliable get_order read of its matched size (safe to place a
+            replacement for the unfilled remainder)
+          - confirmed_gone=False : could NOT confirm both of those (HOLD) ->
+            caller MUST NOT place a replacement, to avoid duplicates
+
+        CRITICAL: a replacement is only ever placed when the prior order is
+        positively gone *and* its fill amount is known. If get_order can't be
+        read (network hiccup) we return HOLD rather than assume "unfilled" -
+        that wrong assumption is exactly what causes duplicate orders.
         """
-        def _matched() -> Tuple[float, float]:
+        def _read() -> Optional[Tuple[float, float]]:
+            """Return (matched, price) from get_order, or None if unreadable."""
             status = self.get_order_status(order_id)
-            f = p = 0.0
-            if status:
-                try:
-                    f = float(status.get('size_matched', 0) or 0)
-                except (TypeError, ValueError):
-                    f = 0.0
-                try:
-                    p = float(status.get('price', 0) or 0)
-                except (TypeError, ValueError):
-                    p = 0.0
-            return f, p
+            if not status:
+                return None
+            try:
+                f = float(status.get('size_matched', 0) or 0)
+            except (TypeError, ValueError):
+                f = 0.0
+            try:
+                p = float(status.get('price', 0) or 0)
+            except (TypeError, ValueError):
+                p = 0.0
+            return (f, p)
 
-        filled, price = _matched()
-        # Already gone (fully filled or closed)?
+        # If it's already gone, we still need a reliable fill read to proceed.
         if self._find_open_order(order_id, token_id) is None:
-            return (True, filled, price)
+            r = _read()
+            return (True, r[0], r[1]) if r is not None else (False, 0.0, 0.0)
 
-        # Cancel the (possibly partially filled) order, then confirm + re-read.
-        self.cancel_order(order_id)
-        if self._find_open_order(order_id, token_id) is None:
-            filled, price = _matched()
-            return (True, filled, price)
+        # Resting -> cancel, then require (gone AND readable) to confirm.
+        for _ in range(2):
+            self.cancel_order(order_id)
+            if self._find_open_order(order_id, token_id) is None:
+                r = _read()
+                return (True, r[0], r[1]) if r is not None else (False, 0.0, 0.0)
 
-        # One more attempt
-        self.cancel_order(order_id)
-        if self._find_open_order(order_id, token_id) is None:
-            filled, price = _matched()
-            return (True, filled, price)
-
-        # Still resting -> cannot confirm; hold (never duplicate)
-        return (False, filled, price)
+        # Still resting / cannot confirm -> HOLD (never duplicate)
+        r = _read()
+        return (False, r[0] if r else 0.0, r[1] if r else 0.0)
 
     async def _place_weather_chase_order(
         self,
@@ -977,7 +980,7 @@ class PolymarketClient:
                     return None, OrderExecutionResult.FAILED, details
 
                 EPS = 0.01            # shares: treat a remainder <= this as complete
-                MIN_NOTIONAL = 1.0    # $: don't chase a remainder smaller than this
+                MIN_SHARES = 5.0      # Polymarket order minimum; can't replace below this
 
                 def _finish(order_id, label):
                     """Record fill stats and pick a result code."""
@@ -995,7 +998,14 @@ class PolymarketClient:
 
                 for chase in range(config.weather_max_chases):
                     remaining = target_shares - total_filled
-                    if remaining <= EPS or remaining * reference < MIN_NOTIONAL:
+                    if remaining <= EPS:
+                        break
+                    # A remainder below the 5-share order minimum can't be
+                    # placed - accept what we've filled so far. (First order is
+                    # exempt: it gets bumped up to the minimum below.)
+                    if total_filled > EPS and remaining < MIN_SHARES:
+                        logger.info(f"🌦️  Weather: remainder {remaining:.2f} sh < {MIN_SHARES:.0f}-share "
+                                    f"minimum - accepting {total_filled:.2f}/{target_shares:.2f} as filled")
                         break
 
                     # --- 1. Reclaim any prior resting order (capture its fill) ---
@@ -1011,7 +1021,7 @@ class PolymarketClient:
                             return _finish(active_order_id, "cancel-unconfirmed")
                         active_order_id = None
                         remaining = target_shares - total_filled
-                        if remaining <= EPS or remaining * reference < MIN_NOTIONAL:
+                        if remaining <= EPS or remaining < MIN_SHARES:
                             break
 
                     # --- 2. Compute the chase price (1 tick ahead of reference) ---
@@ -1071,9 +1081,23 @@ class PolymarketClient:
                         active_order_id = None
                         return _finish(order_id, "filled")
 
-                    # --- 6. Partial/none: refresh the reference and loop. The top
-                    #        of the loop reclaims the remainder and re-prices it
-                    #        1 tick ahead of the new market (this is the chase). ---
+                    # --- 6. Partial/none fill. Decide: chase the remainder, or
+                    #        accept it if it's below the 5-share order minimum. ---
+                    remaining_after = target_shares - (total_filled + filled_now)
+                    if remaining_after < MIN_SHARES:
+                        # Can't place a sub-5-share replacement. Accept the
+                        # partial as final and leave THIS order resting (its
+                        # remainder may still fill; same order = no duplicate).
+                        total_filled += filled_now
+                        active_order_id = None  # leave it resting; don't reclaim
+                        logger.info(f"🌦️  Weather: remainder {remaining_after:.2f} sh < {MIN_SHARES:.0f}-share "
+                                    f"minimum - accepting {total_filled:.2f}/{target_shares:.2f} as filled, "
+                                    f"leaving order {order_id} resting")
+                        return _finish(order_id, "remainder-below-min")
+
+                    # Remainder >= 5 -> chase: refresh the reference and loop. The
+                    # top of the loop reclaims the remainder (confirmed gone) and
+                    # re-prices 1 tick ahead of the new market.
                     new_ref = self._get_best_price(token_id, side)
                     if new_ref is not None:
                         reference = new_ref
