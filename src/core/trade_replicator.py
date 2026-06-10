@@ -117,7 +117,14 @@ class TradeReplicator:
                 # This means if target sells 1.8 shares, we sell (1.8 * copy_percentage) shares
                 copy_size = trade.size * self.config.copy_percentage
                 copy_amount = copy_size * trade.price if trade.price > 0 else copy_size
-                
+
+                # Polymarket orders have a 5-share minimum, and a SELL can't be
+                # bumped up (you can't sell shares you don't own). So a sub-5
+                # SELL is un-placeable -> skip it cleanly rather than failing.
+                if (self.config.gtc_enforce_min_shares or self.config.use_weather_mode) and copy_size < 5.0:
+                    logger.info(f"[SELL] Copy size {copy_size:.2f} shares < 5-share order minimum - skipping (can't place a sub-5 sell)")
+                    return 0.0, 0.0
+
                 logger.info(f"[SELL] Calculated position size: {copy_size} shares (same % as target), ${copy_amount:.2f}")
                 return copy_size, copy_amount
             

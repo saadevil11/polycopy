@@ -68,6 +68,10 @@ class PolymarketClient:
         # the SAME token serializes - prevents two chases fighting/duplicating
         # orders on one market. Different tokens still run in parallel.
         self._token_locks: Dict[str, asyncio.Lock] = {}
+
+        # Last error string from place_limit_order (so callers can detect
+        # non-retryable failures like insufficient balance/allowance).
+        self._last_place_error: Optional[str] = None
         
     def initialize(self) -> bool:
         """Initialize the Polymarket client"""
@@ -319,8 +323,22 @@ class PolymarketClient:
                     if size <= 0:
                         continue  # Closed/empty position
 
+                    # Skip resolved positions awaiting redemption. They are no
+                    # longer open exposure (the auto-redeemer claims them), and
+                    # counting them inflates both the position count and value.
+                    if item.get('redeemable') is True:
+                        continue
+
                     avg_price = float(item.get('avgPrice', 0) or 0)
-                    cur_price = float(item.get('curPrice', avg_price) or avg_price)
+                    # curPrice can legitimately be 0.0 (resolved/worthless).
+                    # Only fall back to avg_price when the field is truly absent
+                    # - NOT on a real 0, which would wildly overvalue dead
+                    # positions (size x avg_price instead of size x 0).
+                    raw_cur = item.get('curPrice')
+                    if raw_cur is None or raw_cur == '':
+                        cur_price = avg_price
+                    else:
+                        cur_price = float(raw_cur)
 
                     # Data API reports cash P&L directly; fall back to a manual calc
                     unrealized_pnl = item.get('cashPnl')
@@ -565,20 +583,23 @@ class PolymarketClient:
                 side=order_side
             )
             
+            self._last_place_error = None
             signed_order = self.client.create_order(order_args)
             response = self.client.post_order(signed_order, OrderType.GTC)
-            
+
             if response.get('success'):
                 order_id = response.get('orderID')
                 logger.success(f"Limit order placed successfully: {order_id}")
                 return order_id
             else:
                 logger.error(f"Failed to place limit order: {response}")
+                self._last_place_error = str(response)
                 return None
-                
+
         except Exception as e:
             error_str = str(e)
-            
+            self._last_place_error = error_str
+
             # Check for "closed only mode" restriction
             if "closed only mode" in error_str.lower():
                 logger.critical("⛔ ACCOUNT RESTRICTED: Your account is in CLOSED-ONLY MODE")
@@ -1030,11 +1051,15 @@ class PolymarketClient:
                     else:
                         limit_price = round(max(self._round_to_tick(reference, tick) - tick, min_price), 10)
 
-                    # --- 3. Size = remaining shares (meet 5-share min only on the
-                    #        very first order, so we don't overbuy on remainders) ---
+                    # --- 3. Size = remaining shares. The 5-share minimum is only
+                    #        bumped for the FIRST *BUY* (we have USD to overbuy).
+                    #        A SELL is NEVER bumped: you can't sell shares you don't
+                    #        own, so a sub-5 sell is skipped upstream and a >=5 sell
+                    #        is placed as-is. ---
                     size = remaining
-                    if config.gtc_enforce_min_shares and total_filled <= EPS and size < 5.0:
-                        logger.info(f"📈 Weather: bumping size to 5-share minimum (was {size:.2f})")
+                    if (side == TradeSide.BUY and config.gtc_enforce_min_shares
+                            and total_filled <= EPS and size < 5.0):
+                        logger.info(f"📈 Weather: bumping BUY size to 5-share minimum (was {size:.2f})")
                         size = 5.0
 
                     logger.info(
@@ -1047,6 +1072,13 @@ class PolymarketClient:
                     # --- 4. Place the order ---
                     order_id = self.place_limit_order(token_id, side, size, limit_price)
                     if not order_id:
+                        err = (self._last_place_error or "").lower()
+                        # Insufficient balance/allowance is permanent for this
+                        # order (e.g. SELL more shares than held) - do NOT retry.
+                        if "balance" in err or "allowance" in err:
+                            logger.error("❌ Weather: insufficient balance/allowance - not retryable, stopping")
+                            details['failure_reasons'].append("weather: insufficient balance/allowance")
+                            break
                         logger.error("❌ Weather: order placement failed")
                         details['failure_reasons'].append(f"weather chase {chase + 1}: placement failed")
                         new_ref = self._get_best_price(token_id, side)
