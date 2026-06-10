@@ -14,6 +14,7 @@ from src.core.polymarket_client import PolymarketClient
 from src.monitors.trader_monitor import TraderMonitor
 from src.monitors.alternative_trader_monitor import AlternativeTraderMonitor
 from src.monitors.websocket_trader_monitor import WebSocketTraderMonitor
+from src.monitors.data_api_trader_monitor import DataAPITraderMonitor
 from src.core.trade_replicator import TradeReplicator
 from src.core.risk_manager import RiskManager
 from src.core.database import Database
@@ -41,8 +42,14 @@ class PolymarketCopyTradingBot:
         self.position_merger = PositionMerger(self.polymarket_client)
         self.auto_redeemer = None  # Initialize later after client is ready
         
-        # Use WebSocket monitoring for real-time trade detection
-        self.trader_monitor = WebSocketTraderMonitor()
+        # Trade detection: real-time WebSocket by default, or Data-API polling
+        # when USE_POLLING_MONITOR=true (needed on hosts whose IP the WS edge
+        # rate-limits with HTTP 429, e.g. many cloud/datacenter IPs).
+        if self.trading_config.use_polling_monitor:
+            self.trader_monitor = DataAPITraderMonitor()
+            logger.info("🛰️  Using Data-API POLLING monitor (USE_POLLING_MONITOR=true)")
+        else:
+            self.trader_monitor = WebSocketTraderMonitor()
         
         # API server for monitoring (optional)
         self.api_server = None

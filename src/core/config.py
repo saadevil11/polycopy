@@ -52,6 +52,11 @@ class TradingConfig:
     weather_max_chases: int = 5                   # Max number of cancel-and-replace attempts
     weather_fill_wait_seconds: float = 2.0        # How long to wait for a chase order to fill before re-checking
 
+    # Trade monitoring source. The live WebSocket is fastest but Polymarket's
+    # edge rate-limits datacenter IPs (HTTP 429); set this True to poll the Data
+    # API instead, which is reachable from those IPs.
+    use_polling_monitor: bool = False
+
     def __post_init__(self):
         if self.excluded_markets is None:
             self.excluded_markets = []
@@ -137,7 +142,9 @@ trading_config = TradingConfig(
     # Weather mode
     use_weather_mode=os.getenv("USE_WEATHER_MODE", "false").lower() == "true",
     weather_max_chases=int(os.getenv("WEATHER_MAX_CHASES", "5")),
-    weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0"))
+    weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0")),
+    # Monitor source
+    use_polling_monitor=os.getenv("USE_POLLING_MONITOR", "false").lower() == "true"
 )
 
 polymarket_config = PolymarketConfig()
