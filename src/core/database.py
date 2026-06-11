@@ -274,6 +274,26 @@ class Database:
             logger.error(f"Failed to get recent copy trades: {e}")
             return []
 
+    def get_copied_token_ids(self) -> set:
+        """Token ids the bot has actually copied (executed BUY copy trades).
+
+        Used to scope the auto-sell limit to markets we copied, so it never
+        touches the user's own unrelated positions.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT DISTINCT t.token_id
+                    FROM copy_trades c
+                    JOIN target_trades t ON c.original_trade_id = t.trade_id
+                    WHERE c.status = 'executed' AND t.token_id IS NOT NULL
+                ''')
+                return {row[0] for row in cursor.fetchall() if row[0]}
+        except Exception as e:
+            logger.error(f"Failed to get copied token ids: {e}")
+            return set()
+
     def get_trade_statistics(self) -> Dict[str, Any]:
         """Get trading statistics"""
         try:

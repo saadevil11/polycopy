@@ -30,7 +30,32 @@ class TradeReplicator:
             # Pre-trade risk checks
             if not await self._pre_trade_checks(original_trade):
                 return self._create_skipped_trade(original_trade, "Failed pre-trade checks")
-            
+
+            # Auto-sell strategy: we keep a resting GTC sell at the standard
+            # price (e.g. 0.999) for our full position. So:
+            #  - target sells AT the standard price -> our resting limit already
+            #    handles the exit (no lagged active sell); just make sure it's
+            #    in place, then skip.
+            #  - target sells at a DIFFERENT price -> cancel the resting limit and
+            #    sell actively at their price - 1 tick (the normal flow below).
+            if (original_trade.side == TradeSide.SELL and self.config.auto_sell_enabled):
+                auto_price = self.config.auto_sell_price
+                if original_trade.price >= auto_price - 1e-6:
+                    logger.info(f"[SELL] Target sold at standard ${original_trade.price:.4f} - "
+                                f"resting auto-sell limit handles the exit, skipping active sell")
+                    try:
+                        self.client.maintain_auto_sell_limits(auto_price, {original_trade.token_id})
+                    except Exception as e:
+                        logger.warning(f"Could not ensure auto-sell limit: {e}")
+                    return self._create_skipped_trade(original_trade, "Handled by resting auto-sell limit")
+                else:
+                    logger.info(f"[SELL] Target sold off-price at ${original_trade.price:.4f} - "
+                                f"cancelling auto-sell limit, selling at their price - 1 tick")
+                    try:
+                        self.client.cancel_auto_sell_for_token(original_trade.token_id, auto_price)
+                    except Exception as e:
+                        logger.warning(f"Could not cancel auto-sell limit: {e}")
+
             # Calculate position size
             copy_size, copy_amount = self._calculate_position_size(original_trade)
             if copy_size <= 0:

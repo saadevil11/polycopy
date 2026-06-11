@@ -65,6 +65,14 @@ class TradingConfig:
     stale_order_cancel_price: float = 0.995
     stale_order_sweep_seconds: int = 30
 
+    # Auto-sell limit: keep a resting GTC sell at this price covering our full
+    # position in each COPIED market, so we exit at the target's usual price
+    # (e.g. 0.999) with no lag. If the target sells at a different price, the
+    # limit is cancelled and we sell at their price - 1 tick instead.
+    auto_sell_enabled: bool = True
+    auto_sell_price: float = 0.999
+    auto_sell_maintain_seconds: int = 20
+
     def __post_init__(self):
         if self.excluded_markets is None:
             self.excluded_markets = []
@@ -156,7 +164,11 @@ trading_config = TradingConfig(
     # Stale-order sweep
     stale_order_sweep_enabled=os.getenv("STALE_ORDER_SWEEP_ENABLED", "true").lower() == "true",
     stale_order_cancel_price=float(os.getenv("STALE_ORDER_CANCEL_PRICE", "0.995")),
-    stale_order_sweep_seconds=int(os.getenv("STALE_ORDER_SWEEP_SECONDS", "30"))
+    stale_order_sweep_seconds=int(os.getenv("STALE_ORDER_SWEEP_SECONDS", "30")),
+    # Auto-sell limit
+    auto_sell_enabled=os.getenv("AUTO_SELL_ENABLED", "true").lower() == "true",
+    auto_sell_price=float(os.getenv("AUTO_SELL_PRICE", "0.999")),
+    auto_sell_maintain_seconds=int(os.getenv("AUTO_SELL_MAINTAIN_SECONDS", "20"))
 )
 
 polymarket_config = PolymarketConfig()

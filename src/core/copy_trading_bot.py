@@ -183,6 +183,13 @@ class PolymarketCopyTradingBot:
             logger.info(f"🧹 Stale-order sweep on (cancel at >= ${self.trading_config.stale_order_cancel_price}, "
                         f"every {self.trading_config.stale_order_sweep_seconds}s)")
 
+        # Start auto-sell maintainer (keep a resting sell at the standard price
+        # covering our full position in each copied market)
+        if self.trading_config.auto_sell_enabled:
+            asyncio.create_task(self._auto_sell_maintain_loop())
+            logger.info(f"🎯 Auto-sell limit on (resting sell @ ${self.trading_config.auto_sell_price} "
+                        f"for full position, refreshed every {self.trading_config.auto_sell_maintain_seconds}s)")
+
         # Start auto-claiming task if enabled
         if self.auto_redeemer:
             asyncio.create_task(self.auto_redeemer.start_auto_claim_loop(
@@ -447,6 +454,23 @@ class PolymarketCopyTradingBot:
                 )
             except Exception as e:
                 logger.error(f"Error in stale-order sweep: {e}")
+                await asyncio.sleep(interval)
+
+    async def _auto_sell_maintain_loop(self):
+        """Keep a resting GTC sell at the standard price covering our full
+        position in each COPIED market, so exits match the target with no lag."""
+        interval = max(10, self.trading_config.auto_sell_maintain_seconds)
+        price = self.trading_config.auto_sell_price
+        while self.running:
+            try:
+                await asyncio.sleep(interval)
+                allowed = await asyncio.to_thread(self.database.get_copied_token_ids)
+                if allowed:
+                    await asyncio.to_thread(
+                        self.polymarket_client.maintain_auto_sell_limits, price, allowed
+                    )
+            except Exception as e:
+                logger.error(f"Error in auto-sell maintain loop: {e}")
                 await asyncio.sleep(interval)
 
 

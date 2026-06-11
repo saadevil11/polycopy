@@ -445,6 +445,103 @@ class PolymarketClient:
         vals = [v for v in (ask, bid) if v]
         return (sum(vals) / len(vals)) if vals else None
 
+    @staticmethod
+    def _floor_to_tick(price: float, tick: float) -> float:
+        """Largest valid tick price <= price (e.g. 0.999 -> 0.99 on a 0.01 tick)."""
+        if tick <= 0:
+            return price
+        import math
+        return round(math.floor(round(price / tick, 9)) * tick, 10)
+
+    def _auto_sell_resting_size(self, token_id: str, sell_price: float,
+                                open_orders: List[Dict[str, Any]]) -> float:
+        """Total unfilled SELL size already resting for this token at sell_price."""
+        resting = 0.0
+        for o in open_orders:
+            tok = o.get('asset_id') or o.get('asset') or o.get('token_id')
+            if tok != token_id:
+                continue
+            if str(o.get('side', '')).upper() != 'SELL':
+                continue
+            try:
+                op = float(o.get('price', 0) or 0)
+            except (TypeError, ValueError):
+                op = 0.0
+            if abs(op - sell_price) > 1e-9:
+                continue
+            try:
+                orig = float(o.get('original_size', o.get('size', 0)) or 0)
+                matched = float(o.get('size_matched', 0) or 0)
+            except (TypeError, ValueError):
+                orig, matched = 0.0, 0.0
+            resting += max(orig - matched, 0.0)
+        return resting
+
+    def maintain_auto_sell_limits(self, price: float, allowed_tokens: Optional[set] = None) -> int:
+        """Ensure each held (copied) position has a resting GTC sell covering its
+        full size at the auto-sell price, so we exit at the target's usual price
+        with no lag. Places only the missing amount. Returns orders placed.
+
+        Scoped to `allowed_tokens` (the markets we actually copied) so it never
+        sells the user's own unrelated positions.
+        """
+        placed = 0
+        try:
+            positions = self.get_current_positions()
+            open_orders = self.get_open_orders()
+        except Exception as e:
+            logger.error(f"auto-sell: could not read positions/orders: {e}")
+            return 0
+
+        for pos in positions:
+            token = pos.token_id
+            if allowed_tokens is not None and token not in allowed_tokens:
+                continue
+            size = float(pos.size or 0)
+            if size < 5.0:
+                continue  # can't place a sub-5 sell anyway
+
+            tick = self._get_tick_size(token)
+            sell_price = self._floor_to_tick(price, tick)
+            if sell_price <= 0 or sell_price >= 1.0:
+                continue
+
+            resting = self._auto_sell_resting_size(token, sell_price, open_orders)
+            need = size - resting
+            if need >= 5.0:
+                logger.info(f"🎯 Auto-sell: placing GTC sell {need:.2f} @ ${sell_price:.4f} "
+                            f"for {pos.market_info.title if pos.market_info else token[:10]}")
+                if self.place_limit_order(token, TradeSide.SELL, need, sell_price):
+                    placed += 1
+        if placed:
+            logger.success(f"🎯 Auto-sell: placed {placed} resting sell limit(s)")
+        return placed
+
+    def cancel_auto_sell_for_token(self, token_id: str, price: float) -> int:
+        """Cancel resting SELL orders for a token at the auto-sell price (used
+        when the target sells at a non-standard price so we re-sell actively)."""
+        cancelled = 0
+        try:
+            tick = self._get_tick_size(token_id)
+            sell_price = self._floor_to_tick(price, tick)
+            for o in self.get_open_orders(token_id=token_id):
+                if str(o.get('side', '')).upper() != 'SELL':
+                    continue
+                try:
+                    op = float(o.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    op = 0.0
+                if abs(op - sell_price) > 1e-9:
+                    continue
+                oid = o.get('id') or o.get('orderID') or o.get('order_id')
+                if oid and self.cancel_order(oid):
+                    cancelled += 1
+        except Exception as e:
+            logger.error(f"auto-sell cancel failed for {token_id}: {e}")
+        if cancelled:
+            logger.info(f"🎯 Auto-sell: cancelled {cancelled} resting sell(s) for {token_id[:10]} (target sold off-price)")
+        return cancelled
+
     def cancel_high_price_open_orders(self, threshold: float = 0.995) -> int:
         """Cancel resting BUY orders in any market whose price has reached
         >= threshold.
@@ -1074,15 +1171,12 @@ class PolymarketClient:
                     details['failure_reasons'].append("weather: no price data")
                     return None, OrderExecutionResult.FAILED, details
 
-                # Chase floor. For a SELL we will sell at most 1 tick below the
-                # TARGET's price and NEVER chase lower (selling further down is a
-                # direct loss). So the floor is target - 1 tick, which also pins
-                # the SELL limit to exactly 1 tick below the target. For a BUY the
-                # absolute floor is just 1 tick.
-                if side == TradeSide.SELL:
-                    min_price = round(max(self._round_to_tick(reference, tick) - tick, tick), 10)
-                else:
-                    min_price = tick                 # e.g. 0.01 for 0.01 tick
+                # Absolute floor for the chase (1 tick). The SELL starts 1 tick
+                # below the reference (the target's price) and may chase down to
+                # fill. The "sell at the target's usual price with no lag" case is
+                # handled separately by the resting auto-sell limit; this active
+                # chase only runs when the target sells at a non-standard price.
+                min_price = tick
 
                 active_order_id: Optional[str] = None
                 last_order_id: Optional[str] = None
