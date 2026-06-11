@@ -630,13 +630,27 @@ class PolymarketClient:
         """Cancel an order"""
         try:
             response = self.client.cancel_order(OrderPayload(orderID=order_id))
-            if response.get('success'):
-                logger.info(f"Order cancelled successfully: {order_id}")
-                return True
-            else:
-                logger.error(f"Failed to cancel order: {response}")
+
+            # The V2 API returns {'canceled': [ids], 'not_canceled': {id: reason}}
+            # rather than {'success': True}. Treat the order as cancelled if it's
+            # in the 'canceled' list (or the legacy success flag is set).
+            if isinstance(response, dict):
+                canceled = response.get('canceled') or []
+                not_canceled = response.get('not_canceled') or {}
+                if order_id in canceled or response.get('success'):
+                    logger.info(f"Order cancelled successfully: {order_id}")
+                    return True
+                # If it's neither canceled nor explicitly rejected, it's likely
+                # already gone (filled/expired) - not an error worth flagging.
+                if order_id not in not_canceled and not not_canceled:
+                    logger.info(f"Order already gone (nothing to cancel): {order_id}")
+                    return True
+                logger.warning(f"Order not cancelled: {order_id} -> {not_canceled.get(order_id, response)}")
                 return False
-                
+
+            logger.warning(f"Unexpected cancel response: {response}")
+            return False
+
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {e}")
             return False
