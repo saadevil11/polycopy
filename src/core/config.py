@@ -59,6 +59,12 @@ class TradingConfig:
     # API instead, which is reachable from those IPs.
     use_polling_monitor: bool = False
 
+    # Stale-order sweep: cancel resting orders once their market reaches this
+    # price (a buy left below a market that ran to ~1.0 will never fill).
+    stale_order_sweep_enabled: bool = True
+    stale_order_cancel_price: float = 0.995
+    stale_order_sweep_seconds: int = 30
+
     def __post_init__(self):
         if self.excluded_markets is None:
             self.excluded_markets = []
@@ -146,7 +152,11 @@ trading_config = TradingConfig(
     weather_max_chases=int(os.getenv("WEATHER_MAX_CHASES", "5")),
     weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0")),
     # Monitor source
-    use_polling_monitor=os.getenv("USE_POLLING_MONITOR", "false").lower() == "true"
+    use_polling_monitor=os.getenv("USE_POLLING_MONITOR", "false").lower() == "true",
+    # Stale-order sweep
+    stale_order_sweep_enabled=os.getenv("STALE_ORDER_SWEEP_ENABLED", "true").lower() == "true",
+    stale_order_cancel_price=float(os.getenv("STALE_ORDER_CANCEL_PRICE", "0.995")),
+    stale_order_sweep_seconds=int(os.getenv("STALE_ORDER_SWEEP_SECONDS", "30"))
 )
 
 polymarket_config = PolymarketConfig()

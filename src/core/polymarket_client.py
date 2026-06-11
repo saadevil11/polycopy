@@ -427,6 +427,60 @@ class PolymarketClient:
             logger.error(f"Failed to get open orders: {e}")
             return []
     
+    def _get_market_price(self, token_id: str) -> Optional[float]:
+        """Best-effort current market price (midpoint) for a token, 0..1."""
+        try:
+            mid = self.client.get_midpoint(token_id)
+            if isinstance(mid, dict):
+                val = float(mid.get('mid', 0) or 0)
+            else:
+                val = float(mid or 0)
+            if val > 0:
+                return val
+        except Exception as e:
+            logger.debug(f"midpoint fetch failed for {token_id}: {e}")
+        # Fallback: average of best bid/ask
+        ask = self._get_best_price(token_id, TradeSide.BUY)
+        bid = self._get_best_price(token_id, TradeSide.SELL)
+        vals = [v for v in (ask, bid) if v]
+        return (sum(vals) / len(vals)) if vals else None
+
+    def cancel_high_price_open_orders(self, threshold: float = 0.995) -> int:
+        """Cancel resting orders in any market whose price has reached >= threshold.
+
+        A resting BUY left below a market that has run up to ~1.0 will never fill
+        and just locks capital, so once the market is effectively decided we clear
+        it out. Returns the number of orders cancelled.
+        """
+        cancelled = 0
+        try:
+            orders = self.get_open_orders()
+        except Exception as e:
+            logger.error(f"stale-order sweep: could not list open orders: {e}")
+            return 0
+
+        # Cache market price per token so we don't re-query for each order.
+        price_by_token: Dict[str, Optional[float]] = {}
+        for o in orders:
+            token = o.get('asset_id') or o.get('asset') or o.get('token_id') or ''
+            oid = o.get('id') or o.get('orderID') or o.get('order_id')
+            if not oid or not token:
+                continue
+            if token not in price_by_token:
+                price_by_token[token] = self._get_market_price(token)
+            mp = price_by_token[token]
+            if mp is not None and mp >= threshold:
+                try:
+                    op = float(o.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    op = 0.0
+                logger.info(f"🧹 Cancelling stale order {oid} (order ${op:.4f}, market ${mp:.4f} >= {threshold})")
+                if self.cancel_order(oid):
+                    cancelled += 1
+        if cancelled:
+            logger.success(f"🧹 Stale-order sweep cancelled {cancelled} order(s)")
+        return cancelled
+
     def get_account_balance(self, use_cache: bool = True) -> float:
         """Get current USDC balance (cached for speed)"""
         try:

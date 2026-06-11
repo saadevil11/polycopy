@@ -175,7 +175,14 @@ class PolymarketCopyTradingBot:
         
         # Start risk monitoring task
         asyncio.create_task(self._risk_monitoring_loop())
-        
+
+        # Start stale-order sweep (cancel resting orders once their market
+        # reaches the cancel price, e.g. a buy stranded below a market near 1.0)
+        if self.trading_config.stale_order_sweep_enabled:
+            asyncio.create_task(self._stale_order_sweep_loop())
+            logger.info(f"🧹 Stale-order sweep on (cancel at >= ${self.trading_config.stale_order_cancel_price}, "
+                        f"every {self.trading_config.stale_order_sweep_seconds}s)")
+
         # Start auto-claiming task if enabled
         if self.auto_redeemer:
             asyncio.create_task(self.auto_redeemer.start_auto_claim_loop(
@@ -426,8 +433,23 @@ class PolymarketCopyTradingBot:
             except Exception as e:
                 logger.error(f"Error in risk monitoring: {e}")
                 await asyncio.sleep(60)
-    
-    
+
+    async def _stale_order_sweep_loop(self):
+        """Periodically cancel resting orders whose market has reached the
+        cancel price (e.g. a buy stranded below a market that ran to ~1.0)."""
+        interval = max(10, self.trading_config.stale_order_sweep_seconds)
+        threshold = self.trading_config.stale_order_cancel_price
+        while self.running:
+            try:
+                await asyncio.sleep(interval)
+                await asyncio.to_thread(
+                    self.polymarket_client.cancel_high_price_open_orders, threshold
+                )
+            except Exception as e:
+                logger.error(f"Error in stale-order sweep: {e}")
+                await asyncio.sleep(interval)
+
+
     async def _save_status(self):
         """Save current bot status"""
         try:
