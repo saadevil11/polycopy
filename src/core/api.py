@@ -38,6 +38,13 @@ class BotAPI:
     def _setup_routes(self):
         """Setup API endpoints"""
         
+        @self.app.route('/')
+        def dashboard():
+            """Serve the monitoring dashboard (single-page app)."""
+            from flask import Response
+            from src.core.dashboard_page import DASHBOARD_HTML
+            return Response(DASHBOARD_HTML, mimetype='text/html')
+
         @self.app.route('/health')
         def health():
             """Health check endpoint"""
@@ -67,27 +74,30 @@ class BotAPI:
         def get_trades():
             """Get recent trades"""
             try:
-                limit = request.args.get('limit', 20, type=int)
-                limit = min(limit, 100)  # Cap at 100
-                
-                # Use get_copy_trades_today instead
-                trades = self.database.get_copy_trades_today()[:limit]
-                
+                limit = request.args.get('limit', 50, type=int)
+                limit = min(limit, 200)  # Cap at 200
+
+                # Enriched rows (joined with target_trades for market/side/price)
+                rows = self.database.get_recent_copy_trades(limit)
+
                 trades_data = []
-                for trade in trades:
-                    # trade is already a dictionary from SQL
+                for r in rows:
                     trades_data.append({
-                        "trade_id": trade.get('trade_id'),
-                        "original_trade_id": trade.get('original_trade_id'),
-                        "timestamp": trade.get('created_at'),
-                        "side": trade.get('side'),
-                        "token_id": trade.get('token_id'),
-                        "copy_amount_usd": float(trade.get('copy_amount_usd', 0)),
-                        "copy_size": float(trade.get('copy_size', 0)),
-                        "status": trade.get('status'),
-                        "market_title": trade.get('market_title', 'Unknown')
+                        "time": r.get('created_at'),
+                        "original_trade_id": r.get('original_trade_id'),
+                        "market_id": r.get('market_id'),
+                        "token_id": r.get('token_id'),
+                        "market_title": r.get('market_title') or 'Unknown',
+                        "side": r.get('side'),
+                        "copy_size": float(r.get('copy_size') or 0),
+                        "copy_amount_usd": float(r.get('copy_amount_usd') or 0),
+                        "execution_price": float(r.get('execution_price') or 0),
+                        "target_price": float(r.get('target_price') or 0),
+                        "status": r.get('status'),
+                        "order_id": r.get('order_id'),
+                        "error": r.get('error_message'),
                     })
-                
+
                 return jsonify({
                     "success": True,
                     "data": trades_data,
@@ -105,23 +115,32 @@ class BotAPI:
         def get_positions():
             """Get current open positions"""
             try:
-                # Get positions from risk manager's current positions
-                positions = self.risk_manager.current_positions if hasattr(self.risk_manager, 'current_positions') else []
-                
+                # Read live positions straight from the client (full Position
+                # objects with market info). Cached ~15s inside the client.
+                positions = []
+                if self.bot and hasattr(self.bot, 'polymarket_client'):
+                    positions = self.bot.polymarket_client.get_current_positions()
+
                 positions_data = []
                 for pos in positions:
+                    mi = getattr(pos, 'market_info', None)
                     positions_data.append({
-                        "token_id": pos.token_id if hasattr(pos, 'token_id') else None,
-                        "market_title": pos.market_title if hasattr(pos, 'market_title') else "Unknown",
-                        "side": pos.side.value if hasattr(pos, 'side') and pos.side else None,
-                        "size": float(pos.size) if hasattr(pos, 'size') and pos.size else 0,
-                        "avg_price": float(pos.avg_price) if hasattr(pos, 'avg_price') and pos.avg_price else 0,
-                        "current_price": float(pos.current_price) if hasattr(pos, 'current_price') and pos.current_price else 0,
-                        "unrealized_pnl": float(pos.unrealized_pnl) if hasattr(pos, 'unrealized_pnl') and pos.unrealized_pnl else 0,
-                        "cost_basis": float(pos.cost_basis) if hasattr(pos, 'cost_basis') and pos.cost_basis else 0,
-                        "current_value": float(pos.current_value) if hasattr(pos, 'current_value') and pos.current_value else 0
+                        "market_id": pos.market_id,
+                        "token_id": pos.token_id,
+                        "market_title": (mi.title if mi and mi.title else "Unknown"),
+                        "outcome": (mi.outcome if mi else ""),
+                        "side": pos.side.value if pos.side else "BUY",
+                        "size": float(pos.size),
+                        "avg_price": float(pos.average_price),
+                        "current_price": float(pos.current_price),
+                        "cost_basis": float(pos.cost_basis_usd),
+                        "current_value": float(pos.current_value_usd),
+                        "unrealized_pnl": float(pos.unrealized_pnl),
                     })
-                
+
+                # Largest value first
+                positions_data.sort(key=lambda p: p["current_value"], reverse=True)
+
                 return jsonify({
                     "success": True,
                     "data": positions_data,

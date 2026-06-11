@@ -232,6 +232,48 @@ class Database:
             logger.error(f"Failed to get today's copy trades: {e}")
             return []
     
+    def get_recent_copy_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get recent copy trades enriched with their target-trade details.
+
+        Joins copy_trades -> target_trades so each row carries market/token/side
+        and the target's price, plus a best-effort market title parsed from the
+        stored market_info JSON.
+        """
+        import json as _json
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT c.original_trade_id, c.copy_size, c.copy_amount_usd,
+                           c.status, c.execution_price, c.order_id, c.error_message,
+                           c.created_at,
+                           t.market_id, t.token_id, t.side, t.price AS target_price,
+                           t.size AS target_size, t.market_info
+                    FROM copy_trades c
+                    LEFT JOIN target_trades t ON c.original_trade_id = t.trade_id
+                    ORDER BY c.created_at DESC
+                    LIMIT ?
+                ''', (limit,))
+                columns = [d[0] for d in cursor.description]
+                rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            for r in rows:
+                title = ''
+                mi = r.get('market_info')
+                if mi:
+                    try:
+                        parsed = _json.loads(mi) if isinstance(mi, str) else mi
+                        if isinstance(parsed, dict):
+                            title = parsed.get('title') or ''
+                    except Exception:
+                        title = ''
+                r['market_title'] = title
+                r.pop('market_info', None)
+            return rows
+        except Exception as e:
+            logger.error(f"Failed to get recent copy trades: {e}")
+            return []
+
     def get_trade_statistics(self) -> Dict[str, Any]:
         """Get trading statistics"""
         try:

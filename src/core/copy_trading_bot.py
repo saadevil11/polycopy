@@ -106,7 +106,9 @@ class PolymarketCopyTradingBot:
             
             # Initialize API server if API_PORT is set
             import os
-            api_port = os.getenv("API_PORT")
+            # Railway sets PORT for web services; use it if API_PORT isn't set
+            # so the monitoring dashboard is exposed automatically.
+            api_port = os.getenv("API_PORT") or os.getenv("PORT")
             if api_port:
                 try:
                     self.api_server = BotAPI(
