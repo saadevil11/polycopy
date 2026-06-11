@@ -193,9 +193,25 @@ class BotAPI:
                         logger.warning(f"Using stale cached balance: ${cash_balance:.2f}")
                     pass
                 
-                # Get position value from metrics
-                position_value = float(metrics.total_position_value_usd) if hasattr(metrics, 'total_position_value_usd') and metrics.total_position_value_usd else 0
-                
+                # Position value + count: read LIVE from the client (same source
+                # as /api/positions) so the KPIs always match the positions table.
+                # The risk_manager's cached metrics only refresh on trade events,
+                # so they can read 0 between trades even with positions open.
+                position_value = 0
+                live_position_count = 0
+                try:
+                    if self.bot and hasattr(self.bot, 'polymarket_client'):
+                        live_positions = self.bot.polymarket_client.get_current_positions()
+                        position_value = sum(p.current_value_usd for p in live_positions)
+                        live_position_count = len(live_positions)
+                    else:
+                        position_value = float(getattr(metrics, 'total_position_value_usd', 0) or 0)
+                        live_position_count = int(getattr(metrics, 'total_positions', 0) or 0)
+                except Exception as e:
+                    logger.error(f"Failed to read live positions in API: {e}")
+                    position_value = float(getattr(metrics, 'total_position_value_usd', 0) or 0)
+                    live_position_count = int(getattr(metrics, 'total_positions', 0) or 0)
+
                 # Get claimable winnings (resolved but not redeemed)
                 claimable_winnings = 0
                 try:
@@ -227,7 +243,7 @@ class BotAPI:
                 metrics_data = {
                     "daily_pnl": daily_pnl,  # From database - persists across restarts
                     "total_pnl": all_time_pnl,  # NEW - all-time P&L from database
-                    "total_positions": metrics.total_positions if hasattr(metrics, 'total_positions') else 0,
+                    "total_positions": live_position_count,
                     "total_position_value": position_value,
                     "balance": total_portfolio,  # Total portfolio value (cash + positions)
                     "cash_balance": cash_balance,  # Available cash only
