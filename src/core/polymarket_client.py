@@ -390,6 +390,20 @@ class PolymarketClient:
             logger.error(f"Failed to get current positions: {e}")
             return self._positions_cache or []
 
+    def get_token_holdings(self, token_id: str, use_cache: bool = True) -> float:
+        """Return how many shares of a specific outcome token the wallet holds.
+
+        Used to cap SELL orders at what we actually own (you can't sell shares
+        you don't have). Returns 0.0 if we hold none / can't determine.
+        """
+        try:
+            for p in self.get_current_positions(use_cache=use_cache):
+                if p.token_id == token_id:
+                    return float(p.size)
+        except Exception as e:
+            logger.debug(f"Could not get holdings for {token_id}: {e}")
+        return 0.0
+
     def get_open_orders(self, market_id: Optional[str] = None,
                         token_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get the account's resting (open) orders via the V2 CLOB API.

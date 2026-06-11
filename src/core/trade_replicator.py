@@ -116,16 +116,25 @@ class TradeReplicator:
                 # For now, use the same share ratio approach
                 # This means if target sells 1.8 shares, we sell (1.8 * copy_percentage) shares
                 copy_size = trade.size * self.config.copy_percentage
+
+                # Cap the SELL at what we ACTUALLY hold - you can't sell shares
+                # you don't own. If our proportional size exceeds our holdings,
+                # sell the maximum we have (provided it still meets the minimum).
+                held = self.client.get_token_holdings(trade.token_id)
+                if held > 0 and copy_size > held:
+                    logger.info(f"[SELL] Capping {copy_size:.2f} -> {held:.2f} shares (we only hold {held:.2f})")
+                    copy_size = held
+
                 copy_amount = copy_size * trade.price if trade.price > 0 else copy_size
 
                 # Polymarket orders have a 5-share minimum, and a SELL can't be
-                # bumped up (you can't sell shares you don't own). So a sub-5
-                # SELL is un-placeable -> skip it cleanly rather than failing.
+                # bumped up. If what we can sell is below 5 shares, it's
+                # un-placeable -> skip cleanly rather than failing.
                 if (self.config.gtc_enforce_min_shares or self.config.use_weather_mode) and copy_size < 5.0:
-                    logger.info(f"[SELL] Copy size {copy_size:.2f} shares < 5-share order minimum - skipping (can't place a sub-5 sell)")
+                    logger.info(f"[SELL] Sellable size {copy_size:.2f} shares < 5-share order minimum - skipping")
                     return 0.0, 0.0
 
-                logger.info(f"[SELL] Calculated position size: {copy_size} shares (same % as target), ${copy_amount:.2f}")
+                logger.info(f"[SELL] Calculated position size: {copy_size} shares, ${copy_amount:.2f}")
                 return copy_size, copy_amount
             
             # For BUY orders, use USD-based calculation
