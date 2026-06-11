@@ -1044,8 +1044,11 @@ class PolymarketClient:
         limit buy 1 tick ahead at 0.74. A GTC buy priced at/above the ask fills
         immediately, so resting unfilled means the ask has moved up. We then
         CONFIRM-cancel the stale order and re-place 1 tick ahead of the new ask.
-        SELL mirrors this 1 tick *below* the best bid (hits the bid -> fills),
-        floored at 1 tick. Capped at 1 - tick (e.g. 0.99) for BUY.
+        SELL is priced exactly 1 tick *below the target's sell price* and never
+        chases lower than that - it fills at the best bid if the bid is at/above
+        that level (price improvement up to the target's price), else it rests
+        (we hold rather than sell further down into a loss). Capped at 1 - tick
+        (e.g. 0.99) for BUY.
 
         DUPLICATE-PROOF INVARIANT: a replacement order is only ever placed after
         `_cancel_and_confirm` returns 'CANCELLED' (positively gone & unfilled). If
@@ -1061,7 +1064,6 @@ class PolymarketClient:
             try:
                 tick = self._get_tick_size(token_id)
                 max_price = round(1.0 - tick, 10)   # e.g. 0.99 for 0.01 tick
-                min_price = tick                     # e.g. 0.01 for 0.01 tick
 
                 # Seed the reference from the target's fill price, else live market
                 reference = original_price if (original_price and original_price > 0) else None
@@ -1071,6 +1073,16 @@ class PolymarketClient:
                     logger.error("❌ Weather: no price data available to chase")
                     details['failure_reasons'].append("weather: no price data")
                     return None, OrderExecutionResult.FAILED, details
+
+                # Chase floor. For a SELL we will sell at most 1 tick below the
+                # TARGET's price and NEVER chase lower (selling further down is a
+                # direct loss). So the floor is target - 1 tick, which also pins
+                # the SELL limit to exactly 1 tick below the target. For a BUY the
+                # absolute floor is just 1 tick.
+                if side == TradeSide.SELL:
+                    min_price = round(max(self._round_to_tick(reference, tick) - tick, tick), 10)
+                else:
+                    min_price = tick                 # e.g. 0.01 for 0.01 tick
 
                 active_order_id: Optional[str] = None
                 last_order_id: Optional[str] = None
