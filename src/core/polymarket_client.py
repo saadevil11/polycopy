@@ -446,11 +446,13 @@ class PolymarketClient:
         return (sum(vals) / len(vals)) if vals else None
 
     def cancel_high_price_open_orders(self, threshold: float = 0.995) -> int:
-        """Cancel resting orders in any market whose price has reached >= threshold.
+        """Cancel resting BUY orders in any market whose price has reached
+        >= threshold.
 
         A resting BUY left below a market that has run up to ~1.0 will never fill
         and just locks capital, so once the market is effectively decided we clear
-        it out. Returns the number of orders cancelled.
+        it out. SELL orders are left alone (a resting sell near resolution may be
+        an intentional exit). Returns the number of orders cancelled.
         """
         cancelled = 0
         try:
@@ -462,6 +464,11 @@ class PolymarketClient:
         # Cache market price per token so we don't re-query for each order.
         price_by_token: Dict[str, Optional[float]] = {}
         for o in orders:
+            # Only sweep BUY orders - never touch resting sells.
+            side = str(o.get('side', '')).upper()
+            if side and side != 'BUY':
+                continue
+
             token = o.get('asset_id') or o.get('asset') or o.get('token_id') or ''
             oid = o.get('id') or o.get('orderID') or o.get('order_id')
             if not oid or not token:
