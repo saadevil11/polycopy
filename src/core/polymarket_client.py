@@ -72,6 +72,10 @@ class PolymarketClient:
         # Last error string from place_limit_order (so callers can detect
         # non-retryable failures like insufficient balance/allowance).
         self._last_place_error: Optional[str] = None
+
+        # Cache of per-token tick sizes so a transient get_tick_size failure
+        # doesn't fall back to a wrong default (which would mis-snap prices).
+        self._tick_cache: Dict[str, float] = {}
         
     def initialize(self) -> bool:
         """Initialize the Polymarket client"""
@@ -504,6 +508,16 @@ class PolymarketClient:
             tick = self._get_tick_size(token)
             sell_price = self._floor_to_tick(price, tick)
             if sell_price <= 0 or sell_price >= 1.0:
+                continue
+
+            # CRITICAL: only place the auto-sell if the market's tick can place
+            # it AT the target price. If it snaps below (e.g. 0.999 -> 0.99 on a
+            # 0.01 tick, or a failed tick lookup), a sell that low would fill
+            # immediately into the current bid - dumping the position well below
+            # the target. In that case skip; the normal sell-copy handles exits.
+            if sell_price < price - 1e-6:
+                logger.debug(f"auto-sell skip {token[:10]}: tick {tick} can't reach "
+                             f"${price} (snaps to ${sell_price}) - would dump, not rest")
                 continue
 
             resting = self._auto_sell_resting_size(token, sell_price, open_orders)
@@ -943,13 +957,21 @@ class PolymarketClient:
             return None, OrderExecutionResult.FAILED, details
     
     def _get_tick_size(self, token_id: str) -> float:
-        """Get the market tick size (defaults to 0.01 / 1 cent on failure)."""
+        """Get the market tick size. Caches successful lookups so a transient
+        failure falls back to the last known tick rather than a wrong default
+        (a wrong tick mis-snaps prices, e.g. 0.999 -> 0.99)."""
         try:
-            tick = self.client.get_tick_size(token_id)
-            return float(tick)
+            tick = float(self.client.get_tick_size(token_id))
+            if tick > 0:
+                self._tick_cache[token_id] = tick
+                return tick
         except Exception as e:
-            logger.debug(f"Could not fetch tick size, defaulting to 0.01: {e}")
-            return 0.01
+            logger.debug(f"Could not fetch tick size: {e}")
+        cached = self._tick_cache.get(token_id)
+        if cached:
+            logger.debug(f"Using cached tick {cached} for {token_id[:10]}")
+            return cached
+        return 0.01
 
     @staticmethod
     def _round_to_tick(price: float, tick: float) -> float:
