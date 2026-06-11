@@ -37,29 +37,34 @@ class RiskManager:
             # Add DRY RUN indicator to logs but keep all checks
             mode_prefix = "[DRY RUN] " if self.client.bot_config.dry_run else ""
             
-            # Check position count limit
-            if len(self.current_positions) >= self.config.max_positions:
-                logger.warning(f"{mode_prefix}Maximum positions reached: {len(self.current_positions)}")
-                return False
-            
-            # Check daily loss limit
+            # Check daily loss limit (applies to every trade)
             current_daily_pnl = self._calculate_daily_pnl()
             if current_daily_pnl <= -self.config.max_daily_loss_usd:
                 logger.warning(f"{mode_prefix}Daily loss limit reached: ${current_daily_pnl:.2f}")
                 return False
-            
-            # Check if we already have a position in this market
+
+            # If we already hold this market, allow it regardless of the
+            # MAX_POSITIONS cap - closing/reducing or scaling in does NOT consume
+            # a new position slot.
             if trade.market_id in self.current_positions:
                 existing_position = self.current_positions[trade.market_id]
-                
+
                 # Allow closing positions (opposite side)
                 if existing_position.side != trade.side:
                     logger.info(f"{mode_prefix}Allowing position close/reduce in market {trade.market_id}")
                     return True
-                
-                # For same side, check if we want to increase position
-                # For now, let's be conservative and not increase positions
-                logger.warning(f"{mode_prefix}Already have position in market {trade.market_id}")
+
+                # Same side = the target is ADDING to their position (scaling in).
+                # Copy it. Each target order has a unique trade-id that the
+                # ingestion dedup already guards, so this mirrors the target's
+                # scale-in without re-copying the same order.
+                logger.info(f"{mode_prefix}Adding to existing position in market {trade.market_id} (target scaled in)")
+                return True
+
+            # New market -> enforce the position count limit here (only new
+            # markets consume a slot).
+            if len(self.current_positions) >= self.config.max_positions:
+                logger.warning(f"{mode_prefix}Maximum positions reached: {len(self.current_positions)}")
                 return False
             
             # Check market-specific limits
