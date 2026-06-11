@@ -51,6 +51,8 @@ class TradingConfig:
     use_weather_mode: bool = False                # If True, chase the price 1 tick ahead until filled
     weather_max_chases: int = 5                   # Max number of cancel-and-replace attempts
     weather_fill_wait_seconds: float = 2.0        # How long to wait for a chase order to fill before re-checking
+    weather_max_buy_price: float = 0.996          # Don't chase a BUY above this (avoid overpaying near $1)
+    weather_min_sell_price: float = 0.004         # Don't chase a SELL below this
 
     # Trade monitoring source. The live WebSocket is fastest but Polymarket's
     # edge rate-limits datacenter IPs (HTTP 429); set this True to poll the Data

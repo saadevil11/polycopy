@@ -1155,12 +1155,33 @@ class PolymarketClient:
                                     f"leaving order {order_id} resting")
                         return _finish(order_id, "remainder-below-min")
 
-                    # Remainder >= 5 -> chase: refresh the reference and loop. The
-                    # top of the loop reclaims the remainder (confirmed gone) and
-                    # re-prices 1 tick ahead of the new market.
+                    # Remainder >= 5 -> consider chasing. But only reprice if a
+                    # NEW order would actually be at a BETTER price. If we're at
+                    # the cap/floor, or the market hasn't moved (so the next order
+                    # would be the identical price), repricing is pointless churn
+                    # -> leave this order resting at the best price and stop.
                     new_ref = self._get_best_price(token_id, side)
-                    if new_ref is not None:
-                        reference = new_ref
+                    ref_next = new_ref if new_ref is not None else reference
+                    if side == TradeSide.BUY:
+                        next_limit = round(min(self._round_to_tick(ref_next, tick) + tick, max_price), 10)
+                        can_improve = next_limit > limit_price + 1e-9
+                        at_bound = limit_price >= max_price - 1e-9
+                    else:
+                        next_limit = round(max(self._round_to_tick(ref_next, tick) - tick, min_price), 10)
+                        can_improve = next_limit < limit_price - 1e-9
+                        at_bound = limit_price <= min_price + 1e-9
+
+                    if at_bound or not can_improve:
+                        total_filled += filled_now
+                        details['filled_amount'] = total_filled
+                        details['avg_price'] = last_fill_price or limit_price
+                        active_order_id = None  # leave it resting at the best price
+                        logger.info(f"🌦️  Weather: at best placeable price ${limit_price:.4f} "
+                                    f"(cap reached or market hasn't moved) - leaving order resting, "
+                                    f"not repricing to the same price")
+                        return order_id, OrderExecutionResult.SUCCESS, details
+
+                    reference = ref_next
 
                 # --- Exhausted chases (or remainder too small). Leave the last
                 #     order resting to catch late liquidity; report what filled. ---
