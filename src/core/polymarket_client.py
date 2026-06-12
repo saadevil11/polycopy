@@ -1388,6 +1388,23 @@ class PolymarketClient:
                     # would be the identical price), repricing is pointless churn
                     # -> leave this order resting at the best price and stop.
                     new_ref = self._get_best_price(token_id, side)
+
+                    # If our order is STILL marketable (BUY at/above the ask, or
+                    # SELL at/below the bid), it will fill - don't reprice. e.g. a
+                    # BUY at 0.96 while the ask is 0.952 stays at 0.96 (and fills
+                    # at 0.952); we never bump it to 0.962.
+                    if new_ref is not None:
+                        still_marketable = ((side == TradeSide.BUY and limit_price >= new_ref - 1e-9)
+                                            or (side == TradeSide.SELL and limit_price <= new_ref + 1e-9))
+                        if still_marketable:
+                            total_filled += filled_now
+                            details['filled_amount'] = total_filled
+                            details['avg_price'] = last_fill_price or limit_price
+                            active_order_id = None  # leave it resting; it will fill
+                            logger.info(f"🌦️  Weather: order ${limit_price:.4f} still marketable vs "
+                                        f"${new_ref:.4f} - leaving it to fill, not repricing")
+                            return order_id, OrderExecutionResult.SUCCESS, details
+
                     ref_next = new_ref if new_ref is not None else reference
                     if side == TradeSide.BUY:
                         next_limit = round(min(self._round_to_tick(ref_next, tick) + buy_ahead, max_price), 10)
