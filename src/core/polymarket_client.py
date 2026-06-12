@@ -531,6 +531,37 @@ class PolymarketClient:
             logger.success(f"🎯 Auto-sell: placed {placed} resting sell limit(s)")
         return placed
 
+    def has_resting_auto_sell(self, token_id: str, price: float) -> bool:
+        """True if we already have a resting SELL for this token at the auto price."""
+        try:
+            tick = self._get_tick_size(token_id)
+            sell_price = self._floor_to_tick(price, tick)
+            orders = self.get_open_orders(token_id=token_id)
+            return self._auto_sell_resting_size(token_id, sell_price, orders) > 0
+        except Exception as e:
+            logger.debug(f"has_resting_auto_sell check failed for {token_id}: {e}")
+            return False
+
+    def sell_at_exact_price(self, token_id: str, price: float, max_shares: float) -> Optional[str]:
+        """Place a GTC sell at an exact price (snapped to tick) for up to our
+        holdings. Fills at the bid if the bid is at/above it, else rests. Used to
+        match the target's exact sell price when we have no auto-sell limit."""
+        try:
+            tick = self._get_tick_size(token_id)
+            sell_price = self._round_to_tick(price, tick)
+            if sell_price <= 0 or sell_price >= 1.0:
+                return None
+            held = self.get_token_holdings(token_id)
+            size = min(max_shares, held) if held > 0 else max_shares
+            if size < 5.0:
+                logger.info(f"sell_at_exact_price: size {size:.2f} < 5-share min, skipping")
+                return None
+            logger.info(f"🎯 Selling {size:.2f} shares at target's exact price ${sell_price:.4f}")
+            return self.place_limit_order(token_id, TradeSide.SELL, size, sell_price)
+        except Exception as e:
+            logger.error(f"sell_at_exact_price failed for {token_id}: {e}")
+            return None
+
     def cancel_auto_sell_for_token(self, token_id: str, price: float) -> int:
         """Cancel resting SELL orders for a token at the auto-sell price (used
         when the target sells at a non-standard price so we re-sell actively)."""
@@ -1183,6 +1214,12 @@ class PolymarketClient:
             try:
                 tick = self._get_tick_size(token_id)
                 max_price = round(1.0 - tick, 10)   # e.g. 0.99 for 0.01 tick
+                # How far above the target a BUY is placed. Default 1 cent (not 1
+                # tick): fast markets jump whole cents, so a full-cent lead avoids
+                # being left behind and constantly re-pricing. Snapped to the tick
+                # grid, at least 1 tick.
+                buy_ahead = max(tick, round(getattr(config, 'weather_buy_ahead', 0.01) / tick) * tick)
+                buy_ahead = round(buy_ahead, 10)
 
                 # Seed the reference from the target's fill price, else live market
                 reference = original_price if (original_price and original_price > 0) else None
@@ -1264,7 +1301,7 @@ class PolymarketClient:
 
                     # --- 2. Compute the chase price (1 tick ahead of reference) ---
                     if side == TradeSide.BUY:
-                        limit_price = round(min(self._round_to_tick(reference, tick) + tick, max_price), 10)
+                        limit_price = round(min(self._round_to_tick(reference, tick) + buy_ahead, max_price), 10)
                     else:
                         limit_price = round(max(self._round_to_tick(reference, tick) - tick, min_price), 10)
 
@@ -1279,10 +1316,11 @@ class PolymarketClient:
                         logger.info(f"📈 Weather: bumping BUY size to 5-share minimum (was {size:.2f})")
                         size = 5.0
 
+                    ahead_desc = (f"+{buy_ahead} above" if side == TradeSide.BUY else "1 tick below")
                     logger.info(
                         f"🌦️  Weather chase {chase + 1}/{config.weather_max_chases}: "
                         f"{side.value} {size:.2f} shares @ ${limit_price:.4f} "
-                        f"(1 tick ahead of ${reference:.4f}, tick={tick}; "
+                        f"({ahead_desc} ${reference:.4f}, tick={tick}; "
                         f"filled {total_filled:.2f}/{target_shares:.2f})"
                     )
 
@@ -1352,7 +1390,7 @@ class PolymarketClient:
                     new_ref = self._get_best_price(token_id, side)
                     ref_next = new_ref if new_ref is not None else reference
                     if side == TradeSide.BUY:
-                        next_limit = round(min(self._round_to_tick(ref_next, tick) + tick, max_price), 10)
+                        next_limit = round(min(self._round_to_tick(ref_next, tick) + buy_ahead, max_price), 10)
                         can_improve = next_limit > limit_price + 1e-9
                         at_bound = limit_price >= max_price - 1e-9
                     else:

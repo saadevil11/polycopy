@@ -31,30 +31,52 @@ class TradeReplicator:
             if not await self._pre_trade_checks(original_trade):
                 return self._create_skipped_trade(original_trade, "Failed pre-trade checks")
 
-            # Auto-sell strategy: we keep a resting GTC sell at the standard
-            # price (e.g. 0.999) for our full position. So:
-            #  - target sells AT the standard price -> our resting limit already
-            #    handles the exit (no lagged active sell); just make sure it's
-            #    in place, then skip.
-            #  - target sells at a DIFFERENT price -> cancel the resting limit and
-            #    sell actively at their price - 1 tick (the normal flow below).
+            # Auto-sell strategy for SELL trades:
+            #  1. If we ALREADY have a resting sell limit at the standard price
+            #     (e.g. 0.999) for this position -> it handles the exit; skip.
+            #  2. Else if the target sells at >= 0.99 -> match their EXACT price
+            #     (we missed pre-positioning, so sell where they sold).
+            #  3. Else (target sells below 0.99) -> cancel any limit and sell
+            #     actively at their price - 1 tick (the normal chase below).
             if (original_trade.side == TradeSide.SELL and self.config.auto_sell_enabled):
+                token = original_trade.token_id
+                tprice = original_trade.price
                 auto_price = self.config.auto_sell_price
-                if original_trade.price >= auto_price - 1e-6:
-                    logger.info(f"[SELL] Target sold at standard ${original_trade.price:.4f} - "
-                                f"resting auto-sell limit handles the exit, skipping active sell")
-                    try:
-                        self.client.maintain_auto_sell_limits(auto_price, {original_trade.token_id})
-                    except Exception as e:
-                        logger.warning(f"Could not ensure auto-sell limit: {e}")
-                    return self._create_skipped_trade(original_trade, "Handled by resting auto-sell limit")
-                else:
-                    logger.info(f"[SELL] Target sold off-price at ${original_trade.price:.4f} - "
-                                f"cancelling auto-sell limit, selling at their price - 1 tick")
-                    try:
-                        self.client.cancel_auto_sell_for_token(original_trade.token_id, auto_price)
-                    except Exception as e:
-                        logger.warning(f"Could not cancel auto-sell limit: {e}")
+                try:
+                    has_limit = self.client.has_resting_auto_sell(token, auto_price)
+                except Exception as e:
+                    logger.warning(f"Could not check resting auto-sell: {e}")
+                    has_limit = False
+
+                if has_limit:
+                    logger.info(f"[SELL] Already have a resting sell limit @ ~${auto_price} for this "
+                                f"position - not following target's sell")
+                    return self._create_skipped_trade(original_trade, "Have resting auto-sell limit")
+
+                if tprice >= 0.99:
+                    # No limit; match the target's exact sell price.
+                    copy_size = original_trade.size * self.config.copy_percentage
+                    logger.info(f"[SELL] No resting limit; matching target's exact price ${tprice:.4f} "
+                                f"for ~{copy_size:.2f} shares")
+                    order_id = self.client.sell_at_exact_price(token, tprice, copy_size)
+                    if order_id:
+                        ct = CopyTrade(original_trade=original_trade, copy_size=copy_size,
+                                       copy_amount_usd=copy_size * tprice, order_type=OrderType.LIMIT,
+                                       status=TradeStatus.EXECUTED)
+                        ct.order_id = order_id
+                        ct.execution_price = tprice
+                        ct.execution_timestamp = datetime.now()
+                        await self.risk_manager.on_trade_executed(ct)
+                        return ct
+                    return self._create_skipped_trade(original_trade, "Exact-price sell not placed (size/holdings)")
+
+                # target sold below 0.99 -> cancel any limit, fall through to chase
+                logger.info(f"[SELL] Target sold off-price at ${tprice:.4f} - cancelling any auto-sell "
+                            f"limit, selling at their price - 1 tick")
+                try:
+                    self.client.cancel_auto_sell_for_token(token, auto_price)
+                except Exception as e:
+                    logger.warning(f"Could not cancel auto-sell limit: {e}")
 
             # Calculate position size
             copy_size, copy_amount = self._calculate_position_size(original_trade)

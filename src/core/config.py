@@ -48,9 +48,10 @@ class TradingConfig:
     gtc_enforce_min_shares: bool = True           # Ensure GTC orders meet 5-share minimum
 
     # Weather mode (aggressive GTC price-chasing for weather markets)
-    use_weather_mode: bool = False                # If True, chase the price 1 tick ahead until filled
+    use_weather_mode: bool = False                # If True, chase the price ahead until filled
     weather_max_chases: int = 5                   # Max number of cancel-and-replace attempts
     weather_fill_wait_seconds: float = 2.0        # How long to wait for a chase order to fill before re-checking
+    weather_buy_ahead: float = 0.01               # How far above the target's price to place a BUY (1 cent, not 1 tick) - fast markets jump cents, so a full-cent lead avoids constant re-pricing
     weather_max_buy_price: float = 0.996          # Don't chase a BUY above this (avoid overpaying near $1)
     weather_min_sell_price: float = 0.004         # Don't chase a SELL below this
 
@@ -159,6 +160,7 @@ trading_config = TradingConfig(
     use_weather_mode=os.getenv("USE_WEATHER_MODE", "false").lower() == "true",
     weather_max_chases=int(os.getenv("WEATHER_MAX_CHASES", "5")),
     weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0")),
+    weather_buy_ahead=float(os.getenv("WEATHER_BUY_AHEAD", "0.01")),
     # Monitor source
     use_polling_monitor=os.getenv("USE_POLLING_MONITOR", "false").lower() == "true",
     # Stale-order sweep
