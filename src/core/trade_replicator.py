@@ -34,10 +34,11 @@ class TradeReplicator:
             # Auto-sell strategy for SELL trades:
             #  1. If we ALREADY have a resting sell limit at the standard price
             #     (e.g. 0.999) for this position -> it handles the exit; skip.
-            #  2. Else if the target sells at >= 0.99 -> match their EXACT price
-            #     (we missed pre-positioning, so sell where they sold).
-            #  3. Else (target sells below 0.99) -> cancel any limit and sell
-            #     actively at their price - 1 tick (the normal chase below).
+            #  2. Else if the target sells at >= auto_sell_exact_threshold (0.97)
+            #     -> match their EXACT price (we missed pre-positioning, so sell
+            #     where they sold).
+            #  3. Else (target sells below the threshold) -> cancel any limit and
+            #     sell actively at their price - 1 tick (the normal chase below).
             if (original_trade.side == TradeSide.SELL and self.config.auto_sell_enabled):
                 token = original_trade.token_id
                 tprice = original_trade.price
@@ -53,11 +54,12 @@ class TradeReplicator:
                                 f"position - not following target's sell")
                     return self._create_skipped_trade(original_trade, "Have resting auto-sell limit")
 
-                if tprice >= 0.99:
+                exact_threshold = getattr(self.config, 'auto_sell_exact_threshold', 0.97)
+                if tprice >= exact_threshold:
                     # No limit; match the target's exact sell price.
                     copy_size = original_trade.size * self.config.copy_percentage
-                    logger.info(f"[SELL] No resting limit; matching target's exact price ${tprice:.4f} "
-                                f"for ~{copy_size:.2f} shares")
+                    logger.info(f"[SELL] No resting limit; target sold at ${tprice:.4f} (>= ${exact_threshold}) "
+                                f"- matching exact price for ~{copy_size:.2f} shares")
                     order_id = self.client.sell_at_exact_price(token, tprice, copy_size)
                     if order_id:
                         ct = CopyTrade(original_trade=original_trade, copy_size=copy_size,

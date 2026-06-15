@@ -73,6 +73,9 @@ class TradingConfig:
     auto_sell_enabled: bool = True
     auto_sell_price: float = 0.999
     auto_sell_maintain_seconds: int = 20
+    # If we have no resting limit and the target sells at >= this price, match
+    # their exact sell price (no -1 tick). Below it, chase at their price-1 tick.
+    auto_sell_exact_threshold: float = 0.97
 
     def __post_init__(self):
         if self.excluded_markets is None:
@@ -170,7 +173,8 @@ trading_config = TradingConfig(
     # Auto-sell limit
     auto_sell_enabled=os.getenv("AUTO_SELL_ENABLED", "true").lower() == "true",
     auto_sell_price=float(os.getenv("AUTO_SELL_PRICE", "0.999")),
-    auto_sell_maintain_seconds=int(os.getenv("AUTO_SELL_MAINTAIN_SECONDS", "20"))
+    auto_sell_maintain_seconds=int(os.getenv("AUTO_SELL_MAINTAIN_SECONDS", "20")),
+    auto_sell_exact_threshold=float(os.getenv("AUTO_SELL_EXACT_THRESHOLD", "0.97"))
 )
 
 polymarket_config = PolymarketConfig()
