@@ -520,7 +520,21 @@ class PolymarketClient:
                              f"${price} (snaps to ${sell_price}) - would dump, not rest")
                 continue
 
-            resting = self._auto_sell_resting_size(token, sell_price, open_orders)
+            # Count ALL resting sells for this token (any price), not just at the
+            # auto price - otherwise an active off-price sell (e.g. at 0.987)
+            # plus this 0.999 limit could total more shares than we hold.
+            resting = 0.0
+            for o in open_orders:
+                tok = o.get('asset_id') or o.get('asset') or o.get('token_id')
+                if tok != token or str(o.get('side', '')).upper() != 'SELL':
+                    continue
+                try:
+                    orig = float(o.get('original_size', o.get('size', 0)) or 0)
+                    matched = float(o.get('size_matched', 0) or 0)
+                except (TypeError, ValueError):
+                    orig, matched = 0.0, 0.0
+                resting += max(orig - matched, 0.0)
+
             need = size - resting
             if need >= 5.0:
                 logger.info(f"🎯 Auto-sell: placing GTC sell {need:.2f} @ ${sell_price:.4f} "

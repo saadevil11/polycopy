@@ -32,13 +32,14 @@ class TradeReplicator:
                 return self._create_skipped_trade(original_trade, "Failed pre-trade checks")
 
             # Auto-sell strategy for SELL trades:
-            #  1. If we ALREADY have a resting sell limit at the standard price
-            #     (e.g. 0.999) for this position -> it handles the exit; skip.
-            #  2. Else if the target sells at >= auto_sell_exact_threshold (0.97)
-            #     -> match their EXACT price (we missed pre-positioning, so sell
-            #     where they sold).
-            #  3. Else (target sells below the threshold) -> cancel any limit and
-            #     sell actively at their price - 1 tick (the normal chase below).
+            #  1. If we have a resting sell limit at the standard price (0.999)
+            #     AND the target is selling at/above that price -> our limit will
+            #     fill alongside them; skip the active sell.
+            #  2. Otherwise we must FOLLOW the target (a 0.999 limit won't fill if
+            #     the target exits lower, e.g. 0.987 - that's stale, cancel it):
+            #     - target sells at >= auto_sell_exact_threshold (0.97) -> match
+            #       their EXACT price.
+            #     - below the threshold -> sell actively at their price - 1 tick.
             if (original_trade.side == TradeSide.SELL and self.config.auto_sell_enabled):
                 token = original_trade.token_id
                 tprice = original_trade.price
@@ -49,10 +50,23 @@ class TradeReplicator:
                     logger.warning(f"Could not check resting auto-sell: {e}")
                     has_limit = False
 
+                # Only skip if our resting limit will actually CAPTURE this exit,
+                # i.e. the target is selling at/above our limit price. If they
+                # sell below it, the limit won't fill -> follow them instead.
+                if has_limit and tprice >= auto_price - 1e-6:
+                    logger.info(f"[SELL] Resting limit @ ~${auto_price} will capture this exit "
+                                f"(target sold @ ${tprice:.4f}) - skipping active sell")
+                    return self._create_skipped_trade(original_trade, "Resting auto-sell limit captures this exit")
+
+                # We're going to follow the target. If we hold a stale limit
+                # (above the target's price, so it won't fill), cancel it first.
                 if has_limit:
-                    logger.info(f"[SELL] Already have a resting sell limit @ ~${auto_price} for this "
-                                f"position - not following target's sell")
-                    return self._create_skipped_trade(original_trade, "Have resting auto-sell limit")
+                    logger.info(f"[SELL] Target sold @ ${tprice:.4f}, below our resting limit @ ${auto_price} "
+                                f"(it won't fill) - cancelling it and following the target")
+                    try:
+                        self.client.cancel_auto_sell_for_token(token, auto_price)
+                    except Exception as e:
+                        logger.warning(f"Could not cancel stale auto-sell limit: {e}")
 
                 exact_threshold = getattr(self.config, 'auto_sell_exact_threshold', 0.97)
                 if tprice >= exact_threshold:
