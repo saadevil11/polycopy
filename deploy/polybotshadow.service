@@ -1,19 +1,19 @@
 [Unit]
-Description=latebutfast Polymarket copytrader (Rust)
+Description=polybotshadow Polymarket copytrader (Rust)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=botuser
-WorkingDirectory=/opt/latebutfast
+WorkingDirectory=/opt/polybotshadow
 # Secrets + config live here (chmod 600, owned by botuser). NEVER commit this.
-EnvironmentFile=/opt/latebutfast/.env
-ExecStart=/opt/latebutfast/latebutfast
+EnvironmentFile=/opt/polybotshadow/.env
+ExecStart=/opt/polybotshadow/polybotshadow
 Restart=on-failure
 RestartSec=5
 # Persisted state (dedup + brownfox markets)
-Environment=COPY_DATA_DIR=/opt/latebutfast/data
+Environment=COPY_DATA_DIR=/opt/polybotshadow/data
 # Hardening
 NoNewPrivileges=true
 ProtectSystem=full

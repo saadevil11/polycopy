@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::time::interval;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::clob::executor::Executor;
 use crate::config::Config;

@@ -1,10 +1,13 @@
 //! Copytrader: follow a target trader and replicate their fills.
 //!
-//! - `monitor`  — polls the Data API for the target's activity (WS-vs-REST is a
-//!   later add; polling is the path that works from datacenter IPs).
-//! - `brownfox` — the one-fixed-share-buy-per-market strategy (ported from the
+//! - `monitor`   — the target's fills, via Data-API polling (`run`) or the
+//!   activity WebSocket (`run_ws`); selected by `DATA_SOURCE` (rest is the path
+//!   that works from datacenter IPs, ws is faster on an allowed IP).
+//! - `brownfox`  — the one-fixed-share-buy-per-market strategy (ported from the
 //!   hardened Python implementation, holdings-driven and restart-safe).
-//! - `store`    — JSON persistence for dedup + brownfox state.
+//! - `replicator`— general proportional buy/sell copy (+ `weather`, `autosell`,
+//!   `stale`).
+//! - `store`     — JSON persistence for dedup + brownfox state + trade log.
 pub mod autosell;
 pub mod brownfox;
 pub mod dashboard;
@@ -24,6 +27,7 @@ pub enum Side {
 /// One observed fill from the target trader.
 #[derive(Clone, Debug)]
 pub struct TargetTrade {
+    #[allow(dead_code)] // dedup key set by the monitor; kept on the model for tracing
     pub trade_id: String, // ws_<txhash> (stable per on-chain trade)
     pub market_id: String, // conditionId
     pub token_id: String,  // outcome asset id

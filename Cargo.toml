@@ -1,8 +1,8 @@
 [package]
-name = "latebutfast"
+name = "polybotshadow"
 version = "0.1.0"
 edition = "2021"
-description = "Rust Polymarket near-resolution sniper: rest a 0.999 GTC buy the instant a fast-resolving market's ask hits 0.999/1.00"
+description = "Rust Polymarket copytrader: follow a target trader and replicate their fills (brownfox + general copy) on the validated CLOB v2 signing path"
 
 # Deps are added per phase so each `cargo build` is fast and the GNU toolchain
 # links self-contained (no Visual Studio / no C compiler). Phase 1 = pure Rust.
@@ -19,7 +19,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # phase 2 — data / discovery / dashboard (pure-Rust: native-tls = SChannel on Windows)
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
-dashmap = "6"
 axum = "0.7"
 futures-util = "0.3"
 

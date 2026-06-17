@@ -7,12 +7,11 @@ use ethers_core::types::{Address, U256};
 use ethers_core::utils::to_checksum;
 use ethers_signers::{LocalWallet, Signer};
 use serde_json::{json, Value};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::clob::auth::{self, ApiCreds};
-use crate::clob::signing::{self, OrderInput, SIDE_BUY};
+use crate::clob::signing::{self, OrderInput};
 use crate::config::Config;
-use crate::models::OutcomeToken;
 
 const BYTES32_ZERO: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -55,7 +54,7 @@ impl Executor {
             .map_err(|e| anyhow::anyhow!("invalid PRIVATE_KEY: {e}"))?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
-            .user_agent("latebutfast/0.1")
+            .user_agent("polybotshadow/0.1")
             .build()?;
         let creds = auth::create_or_derive(cfg, &client, &wallet).await?;
 
@@ -79,120 +78,6 @@ impl Executor {
             neg_risk_exchange_v2: cfg.neg_risk_exchange_v2.parse()?,
             dry_run: cfg.dry_run,
         })
-    }
-
-    /// Place a GTC BUY of `size` shares at EXACTLY `price`, using the live `tick`.
-    /// Refuses if `price` is not representable at `tick` (we never settle for a
-    /// worse price like 0.99). Returns the CLOB order id on success.
-    pub async fn place_gtc_buy(
-        &self,
-        token: &OutcomeToken,
-        price: f64,
-        size: f64,
-        tick: f64,
-    ) -> anyhow::Result<String> {
-        let tick = if tick > 0.0 { tick } else { 0.01 };
-        if !signing::price_representable(price, tick) {
-            anyhow::bail!("price {price} not representable at tick {tick} — refusing (only place exact {price})");
-        }
-        let snapped = signing::snap_price(price, tick);
-        let (maker_amount, taker_amount) = signing::buy_amounts(snapped, size, tick);
-        if taker_amount == 0 || maker_amount == 0 {
-            anyhow::bail!("computed zero amount (price={snapped}, size={size}, tick={tick})");
-        }
-
-        let token_id = U256::from_dec_str(&token.token_id)
-            .map_err(|e| anyhow::anyhow!("bad token_id: {e}"))?;
-        let now_ms = auth::now_millis();
-        let salt = signing::generate_salt(now_ms);
-
-        let verifying = if token.neg_risk {
-            self.neg_risk_exchange_v2
-        } else {
-            self.exchange_v2
-        };
-
-        let order = OrderInput {
-            salt,
-            maker: self.funder_addr,
-            signer: self.wallet.address(),
-            token_id,
-            maker_amount,
-            taker_amount,
-            side: SIDE_BUY,
-            sig_type: self.sig_type,
-            timestamp_ms: now_ms,
-        };
-        let signature = signing::sign_order(&self.wallet, &order, verifying, self.chain_id)?;
-
-        // Build the body ONCE as a compact string; HMAC and POST the same bytes.
-        let body = json!({
-            "order": {
-                "salt": salt as u64,
-                "maker": self.funder,
-                "signer": self.signer_checksum,
-                "tokenId": token.token_id,
-                "makerAmount": maker_amount.to_string(),
-                "takerAmount": taker_amount.to_string(),
-                "side": "BUY",
-                "expiration": "0",
-                "signatureType": self.sig_type,
-                "timestamp": now_ms.to_string(),
-                "metadata": BYTES32_ZERO,
-                "builder": BYTES32_ZERO,
-                "signature": signature,
-            },
-            "owner": self.creds.api_key,
-            "orderType": "GTC",
-            "deferExec": false,
-            "postOnly": false,
-        });
-        let body_str = serde_json::to_string(&body)?;
-
-        let ts = auth::now_secs();
-        let headers = auth::l2_headers(
-            &self.creds,
-            &self.signer_checksum,
-            ts,
-            "POST",
-            "/order",
-            Some(&body_str),
-        )?;
-
-        let mut rb = self
-            .client
-            .post(format!("{}/order", self.clob_url))
-            .header("Content-Type", "application/json")
-            .body(body_str);
-        for (k, v) in headers {
-            rb = rb.header(k, v);
-        }
-
-        let resp = rb.send().await?;
-        let status = resp.status();
-        let v: Value = resp.json().await.unwrap_or(Value::Null);
-        debug!("POST /order -> {status}: {v}");
-
-        let ok = v.get("success").and_then(|x| x.as_bool()).unwrap_or(false);
-        let order_id = v
-            .get("orderID")
-            .or_else(|| v.get("orderId"))
-            .or_else(|| v.get("id"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if status.is_success() && ok && !order_id.is_empty() {
-            Ok(order_id)
-        } else {
-            let err = v
-                .get("errorMsg")
-                .or_else(|| v.get("error"))
-                .and_then(|x| x.as_str())
-                .unwrap_or("unknown");
-            warn!("order rejected ({status}): {err} | full={v}");
-            anyhow::bail!("order rejected ({status}): {err}")
-        }
     }
 
     /// Cancel a resting order by id. `DELETE /order` body `{"orderID":"…"}`,
@@ -222,38 +107,6 @@ impl Executor {
         } else {
             anyhow::bail!("cancel rejected ({status}): {v}")
         }
-    }
-
-    /// True if we already have a resting (un-filled) order on this token.
-    /// Mirrors the copytrader's open-orders reconciliation so a restart never
-    /// double-places. `GET /data/orders?asset_id=…`, L2-signed over `GET`+path.
-    pub async fn has_existing_order(&self, token_id: &str) -> bool {
-        let ts = auth::now_secs();
-        let headers =
-            match auth::l2_headers(&self.creds, &self.signer_checksum, ts, "GET", "/data/orders", None) {
-                Ok(h) => h,
-                Err(_) => return false,
-            };
-        let mut rb = self.client.get(format!(
-            "{}/data/orders?asset_id={}&next_cursor=MA==",
-            self.clob_url, token_id
-        ));
-        for (k, v) in headers {
-            rb = rb.header(k, v);
-        }
-        let v: Value = match rb.send().await {
-            Ok(r) => r.json().await.unwrap_or(Value::Null),
-            Err(e) => {
-                debug!("open-orders check failed for {}: {e}", &token_id[..token_id.len().min(8)]);
-                return false; // don't block on a transient error; one-shot still guards the session
-            }
-        };
-        let data = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-        data.iter().any(|o| {
-            let orig = num(o, "original_size");
-            let matched = num(o, "size_matched");
-            orig - matched > 0.0
-        })
     }
 
     // ── copytrader execution API (token-id based; reuses validated signing) ──
@@ -302,7 +155,6 @@ impl Executor {
             timestamp_ms: now_ms,
         };
         let signature = signing::sign_order(&self.wallet, &order, verifying, self.chain_id)?;
-        let side_str = if side == signing::SIDE_BUY { "BUY" } else { "SELL" };
 
         let body = json!({
             "order": {

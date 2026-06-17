@@ -1,4 +1,4 @@
-# Deploying latebutfast (Rust copytrader) on AWS
+# Deploying polybotshadow (Rust copytrader) on AWS
 
 ## ⚠️ READ FIRST — the region decision determines if it works at all
 
@@ -46,13 +46,13 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y && source "$HOME/.cargo/env"
 
 ### 3. Build (no MinGW/dlltool needed on Linux — the standard GNU toolchain works)
 ```bash
-git clone <your-repo-url> latebutfast && cd latebutfast
-cargo build --release          # produces target/release/latebutfast
+git clone <your-repo-url> polybotshadow && cd polybotshadow
+cargo build --release          # produces target/release/polybotshadow
 ```
 
 ### 4. Validate signing on the box (do this once, live)
 ```bash
-PRIVATE_KEY=<key> FUNDER_ADDRESS=<proxy> ./target/release/latebutfast selftest
+PRIVATE_KEY=<key> FUNDER_ADDRESS=<proxy> ./target/release/polybotshadow selftest
 ```
 Run the SAME fixed inputs through py-clob-client-v2 (`ExchangeOrderBuilderV2`) and
 confirm the order hash matches. Only then set `LIVE_SIGNING_VALIDATED=true`.
@@ -60,19 +60,19 @@ confirm the order hash matches. Only then set `LIVE_SIGNING_VALIDATED=true`.
 ### 5. Install as a service
 ```bash
 sudo useradd -r -s /usr/sbin/nologin botuser || true
-sudo mkdir -p /opt/latebutfast/data
-sudo cp target/release/latebutfast /opt/latebutfast/
-sudo cp deploy/latebutfast.service /etc/systemd/system/
-# create /opt/latebutfast/.env from .env.example (see env list below), then:
-sudo chown -R botuser:botuser /opt/latebutfast
-sudo chmod 600 /opt/latebutfast/.env
+sudo mkdir -p /opt/polybotshadow/data
+sudo cp target/release/polybotshadow /opt/polybotshadow/
+sudo cp deploy/polybotshadow.service /etc/systemd/system/
+# create /opt/polybotshadow/.env from .env.example (see env list below), then:
+sudo chown -R botuser:botuser /opt/polybotshadow
+sudo chmod 600 /opt/polybotshadow/.env
 sudo systemctl daemon-reload
-sudo systemctl enable --now latebutfast
-sudo journalctl -u latebutfast -f      # watch logs
+sudo systemctl enable --now polybotshadow
+sudo journalctl -u polybotshadow -f      # watch logs
 ```
 
 ### 6. Secrets
-Put `PRIVATE_KEY` in `/opt/latebutfast/.env` (chmod 600), **or** pull it at start
+Put `PRIVATE_KEY` in `/opt/polybotshadow/.env` (chmod 600), **or** pull it at start
 from AWS SSM Parameter Store / Secrets Manager. Never bake it into the AMI or
 commit it.
 
@@ -81,12 +81,12 @@ commit it.
 ## Option B — Docker (reproducible; ECS/Fargate or EC2)
 
 ```bash
-docker build -t latebutfast .
-docker run -d --name latebutfast --restart unless-stopped \
+docker build -t polybotshadow .
+docker run -d --name polybotshadow --restart unless-stopped \
   --env-file .env \
-  -v /opt/latebutfast/data:/data \
+  -v /opt/polybotshadow/data:/data \
   -p 8090:8090 \
-  latebutfast
+  polybotshadow
 ```
 The included `Dockerfile` builds on Linux (OpenSSL via native-tls) and ships a
 slim runtime with `ca-certificates` + `libssl3`. For ECS/Fargate, push the image

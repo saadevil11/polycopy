@@ -1,276 +1,137 @@
-# 🤖 Polymarket Copy Trading Bot
+# 🤖 polybotshadow — Polymarket Copytrader (Rust)
 
-A sophisticated automated trading bot that copies trades from successful Polymarket traders in real-time.
+A Rust Polymarket **copytrader**: it follows a target trader and replicates their
+fills in real time through the validated Polymarket **CLOB V2** signing path.
 
-![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
+This is the Rust port of the original Python copytrader. The Python project is
+preserved, unmodified and **never executed**, in [`legacy-python/`](legacy-python/)
+as a reference archive — everything that runs here is Rust.
+
+![Rust](https://img.shields.io/badge/rust-2021-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-## ✨ Features
+## ✨ What it does
 
-- 🎯 **Real-time Trade Copying** - Instantly replicate trades from target traders via WebSocket
-- 💰 **Smart Position Sizing** - Configurable copy percentage with min/max limits
-- 🛡️ **Risk Management** - Built-in position limits, daily loss caps, and price filters
-- 🔄 **Merge & Redeem** - Automatically copy merge/redeem actions from target traders
-- 🎨 **Beautiful GUI** - Easy-to-use interface for configuration and monitoring
-- 📊 **Multi-Bot Dashboard** - Monitor multiple bots simultaneously in one unified view ⭐ NEW
-- 📊 **Market Filters** - Focus on specific markets (e.g., Bitcoin, Ethereum, Solana)
-- 🧪 **Dry Run Mode** - Test strategies without risking real money
-- 📈 **Trade Analytics** - Track performance with detailed logs and database
+- 🎯 **Real-time trade copying** — detect a target's fills via the activity
+  WebSocket **or** Data-API REST polling (your choice: `DATA_SOURCE=ws|rest`).
+- 🦊 **brownfox mode** (`USE_BROWNFOX_MODE=true`) — for each market the target
+  enters, place **one fixed-SHARE buy** at their exact price, mark a **resting
+  sell** at `buy + markup` (+1 cent), and **force an exit** if they sell below it.
+  Holdings-driven + restart-safe (state reconstructed from on-chain holdings +
+  open orders, so a restart never double-buys).
+- 💰 **General copy replicator** (`USE_BROWNFOX_MODE=false`) — copy buys/sells
+  **proportionally** (`COPY_PERCENTAGE`), sells **capped at our holdings** (never
+  over-sell), with `MAX_POSITIONS` and a minimum target-trade value. Optional
+  **weather** price-chasing, **auto-sell** resting limit, and **stale-order sweep**.
+- 📊 **Dashboard** — live positions, recent copy trades, and portfolio value/PnL
+  at `http://localhost:8090`.
+- 🧪 **Dry-run mode** — `DRY_RUN=true` detects trades and logs would-be orders
+  while placing **nothing**.
 
-## 🚀 Quick Start
+## 🚀 Quick start
 
 ### Prerequisites
+- Rust (stable). On **Windows**, the GNU toolchain + MinGW-w64 (`dlltool` on PATH).
+  On **Linux** (incl. AWS), the standard GNU toolchain — no extra C toolchain.
+- A Polymarket account (proxy wallet) with pUSD, and the target trader's address.
 
-- Python 3.11+
-- Polymarket account with USDC balance
-- Target trader address to copy
+### Build & run (dry-run)
+```powershell
+cd F:\others\githubrepo\polybotshadow-1
+# Windows only: put the mingw64 bin on PATH for dlltool
+$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+cargo build --release
 
-### Installation
+# copy the example env and edit it (target address, mode, sizes…)
+copy .env.example .env
+
+# safe dry-run: detects the target, LOGS would-be orders, dashboard at :8090
+$env:DRY_RUN="true"; cargo run --release
+```
+On Linux:
+```bash
+cargo build --release
+cp .env.example .env   # edit it
+DRY_RUN=true ./target/release/polybotshadow
+```
+
+### Go live (gated)
+Live order placement is refused unless **both** flags are set, and only after the
+signing self-test matches `py-clob-client-v2`:
+```powershell
+# 1) signing self-test vector (no network)
+$env:PRIVATE_KEY="0x…"; cargo run --release -- selftest
+# 2) after the gate + funding/allowances are set:
+$env:DRY_RUN="false"; $env:LIVE_SIGNING_VALIDATED="true"; cargo run --release
+```
+
+## ⚙️ Configuration
+
+All configuration is via environment variables — see [`.env.example`](.env.example)
+for the full annotated list. The essentials:
 
 ```bash
-# Clone the repository
-git clone https://github.com/shadow-112/polybotshadow.git
-cd polybotshadow
-
-# Create virtual environment
-python3.11 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp docs/env.example .env
-nano .env  # Edit with your settings
+PRIVATE_KEY=0x…                  # signer EOA (NEVER committed)
+FUNDER_ADDRESS=0x…               # Polymarket proxy wallet (the maker)
+SIGNATURE_TYPE=2                 # Gnosis-Safe proxy (most users)
+TARGET_TRADER_ADDRESS=0x…        # the trader to copy
+DATA_SOURCE=rest                 # rest (AWS-safe) | ws (faster, needs allowed IP)
+DRY_RUN=true                     # true = place nothing, just log
+USE_BROWNFOX_MODE=true           # the requested strategy (else general copy)
+BROWNFOX_TRADE_SIZE_SHARES=50    # fixed shares per market
 ```
 
-### Configuration
-
-Edit `.env` with your settings:
-
-```bash
-# Wallet Configuration
-PRIVATE_KEY=your_private_key_here
-FUNDER_ADDRESS=0xYourPolymarketWalletAddress  # From Polymarket profile!
-TARGET_TRADER_ADDRESS=0xTargetTraderAddress
-SIGNATURE_TYPE=2  # Most users need this (Proxy wallet)
-
-# Trading Settings
-COPY_PERCENTAGE=0.1  # Copy 10% of target's trade size
-MAX_POSITION_SIZE_USD=1000
-MIN_POSITION_SIZE_USD=10
-MAX_DAILY_LOSS_USD=500
-MAX_POSITIONS=10
-
-# Market Filters (comma-separated)
-MARKET_FILTERS=Bitcoin Up or Down on,Ethereum Up or Down on,Solana Up or Down on
-
-# Bot Settings
-DRY_RUN=false  # Set to true for testing
-COPY_MERGE_ACTIONS=true
-COPY_REDEEM_ACTIONS=true
-```
-
-### Run the Bot
-
-#### Option 1: GUI (Recommended)
-```bash
-python gui.py
-```
-
-#### Option 2: Command Line
-```bash
-python start_bot.py
-```
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
-polybotshadow/
+polybotshadow-1/
 ├── src/
-│   ├── core/              # Core bot logic
-│   │   ├── config.py      # Configuration management
-│   │   ├── models.py      # Data models
-│   │   ├── database.py    # SQLite database
-│   │   ├── polymarket_client.py  # API wrapper
-│   │   ├── copy_trading_bot.py   # Main bot orchestrator
-│   │   ├── trade_replicator.py   # Trade execution
-│   │   ├── risk_manager.py       # Risk controls
-│   │   ├── market_filters.py     # Market filtering
-│   │   └── merge_positions.py    # Merge/redeem logic
-│   ├── monitors/          # Trade monitoring
-│   │   ├── websocket_trader_monitor.py  # Real-time WebSocket
-│   │   ├── trader_monitor.py            # API polling
-│   │   └── alternative_trader_monitor.py # Backup monitor
-│   └── utils/             # Test utilities
-├── tools/                 # Utility scripts
-│   ├── check_balance.py   # Check wallet balance
-│   ├── manual_trade_test.py  # Manual trade testing
-│   ├── dashboard.py       # Web dashboard
-│   └── setup_allowances.py   # Setup USDC allowances
-├── docs/                  # Documentation
-│   ├── env.example        # Example configuration
-│   ├── QUICKSTART.md      # Quick start guide
-│   ├── WALLET_SETUP_GUIDE.md  # Wallet setup
-│   └── AWS_DEPLOYMENT_GUIDE.md  # AWS deployment
-├── gui.py                 # GUI application
-├── start_bot.py           # CLI entry point
-└── requirements.txt       # Python dependencies
+│   ├── main.rs              # load config; spawn monitor + strategy + dashboard
+│   ├── config.rs           # env config + verified hosts/addresses; live-mode gate
+│   ├── clob/               # the validated money layer (CLOB V2)
+│   │   ├── signing.rs      # EIP-712 V2 order hash+sign, amount/tick math, selftest
+│   │   ├── auth.rs         # L1 derive-api-key + L2 HMAC headers
+│   │   └── executor.rs     # build→sign→POST GTC (BUY/SELL) + reads
+│   └── copytrader/
+│       ├── monitor.rs      # target feed: REST poll | activity WebSocket
+│       ├── brownfox.rs     # one-fixed-share-buy-per-market state machine
+│       ├── replicator.rs   # proportional buy/sell copy
+│       ├── weather.rs      # price-chase buy/sell
+│       ├── autosell.rs     # resting standard-price sell maintainer
+│       ├── stale.rs        # cancel resting BUYs near 1.0
+│       ├── store.rs        # JSON persistence (dedup, brownfox, copied, trades)
+│       └── dashboard.rs    # axum: GET / (HTML) + GET /api/state (JSON)
+├── deploy/                 # AWS_DEPLOY.md + polybotshadow.service (systemd)
+├── Dockerfile              # Linux build + slim runtime
+├── ARCHITECTURE.md               # full design + verified CLOB V2 integration notes
+└── legacy-python/          # the original Python copytrader — ARCHIVE, never run
 ```
 
-## 🛠️ Tools
+## ☁️ Deployment
 
-### Check Balance
-```bash
-python tools/check_balance.py
-```
-
-### Manual Trade Test
-```bash
-python tools/manual_trade_test.py
-```
-
-### Single Bot Dashboard
-```bash
-python tools/dashboard.py
-# Open http://localhost:8080
-```
-
-### Multi-Bot Dashboard ⭐ NEW
-Monitor multiple bots in one unified dashboard:
-```bash
-./start_dashboard.sh
-# Open http://localhost:8080
-```
-
-See [Dashboard Quick Start](DASHBOARD_QUICKSTART.md) for setup instructions.
-
-## 📖 Documentation
-
-- [Quick Start Guide](docs/QUICKSTART.md)
-- [Wallet Setup Guide](docs/WALLET_SETUP_GUIDE.md)
-- [Railway Deployment Guide](docs/RAILWAY_DEPLOYMENT_GUIDE.md) ⭐ Recommended
-- [Multi-Bot Dashboard Guide](DASHBOARD_QUICKSTART.md) ⭐ NEW - Monitor multiple bots
-- [AWS Deployment Guide](docs/AWS_DEPLOYMENT_GUIDE.md)
-- [Project Overview](docs/PROJECT_OVERVIEW.md)
-
-## ⚙️ Key Features Explained
-
-### Market Filters
-Focus on specific markets by pattern matching:
-```bash
-MARKET_FILTERS=Bitcoin Up or Down on,Ethereum Up or Down on
-```
-
-### Risk Management
-- **Max Positions**: Limit concurrent open positions
-- **Daily Loss Cap**: Stop trading after reaching loss limit
-- **Position Sizing**: Min/max limits per trade
-- **Price Filters**: Avoid extreme markets (>0.99 or <0.01)
-
-### Merge & Redeem
-- **Merge**: Combine YES + NO positions → USDC
-- **Redeem**: Claim winnings from resolved markets
-- Automatically copies when target trader performs these actions
-
-### Dry Run Mode
-Test your strategy without risking real money:
-```bash
-DRY_RUN=true
-```
+See [`deploy/AWS_DEPLOY.md`](deploy/AWS_DEPLOY.md) for EC2 + systemd and Docker
+(ECS/Fargate) instructions, including the **region geoblock caveat**: Polymarket
+blocks order POSTs from US datacenter IPs — reads work everywhere, but you must
+deploy in a Polymarket-allowed region (or proxy) for live orders to fill.
 
 ## 🔒 Security
 
-- ✅ Private keys stored in `.env` (never committed)
-- ✅ `.gitignore` configured to exclude sensitive files
-- ✅ Signature type 2 for Polymarket proxy wallets
-- ✅ All transactions signed locally
-
-## 🐛 Troubleshooting
-
-### "Invalid signature" error
-- Ensure `FUNDER_ADDRESS` is your **Polymarket wallet address** (from profile), not MetaMask
-- Set `SIGNATURE_TYPE=2` for proxy wallets
-
-### Bot not copying trades
-- Check market filters are configured correctly
-- Verify WebSocket connection in logs
-- Ensure target trader is active
-
-### Balance issues
-- Run `python tools/check_balance.py`
-- Ensure USDC is on Polygon network
-- Polymarket handles gas fees automatically
-
-## ☁️ Cloud Deployment
-
-### Railway (Recommended - Easiest)
-
-Deploy in 5 minutes with auto-deploy from GitHub:
-
-```bash
-# See detailed guide
-cat docs/RAILWAY_DEPLOYMENT_GUIDE.md
-```
-
-**Cost**: ~$5-10/month | **Setup**: 5 minutes | **Difficulty**: ⭐
-
-### AWS EC2 (Advanced)
-
-Deploy to AWS EC2 for full control:
-
-```bash
-# See detailed guide
-cat docs/AWS_DEPLOYMENT_GUIDE.md
-```
-
-**Cost**: ~$8-20/month | **Setup**: 30 minutes | **Difficulty**: ⭐⭐⭐
-
-## 📊 Performance Monitoring
-
-### GUI
-- Real-time trade feed
-- Position tracking
-- P&L monitoring
-- Activity logs
-
-### Logs
-```bash
-tail -f polymarket_bot.log
-```
-
-### Database
-```bash
-sqlite3 data/trades.db "SELECT * FROM copy_trades ORDER BY execution_timestamp DESC LIMIT 10;"
-```
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+- ✅ Private keys live in `.env` (gitignored), never committed.
+- ✅ Live trading is double-gated: `DRY_RUN=false` **and**
+  `LIVE_SIGNING_VALIDATED=true`, after the signing self-test matches the reference.
+- ✅ Signature type 2 for Polymarket proxy wallets; all signing is local.
+- ✅ Sells are capped at actual holdings — the bot never over-sells.
 
 ## ⚠️ Disclaimer
 
-This bot is for educational purposes. Trading involves risk. Only trade with funds you can afford to lose. The authors are not responsible for any financial losses.
+For educational purposes. Trading involves risk; only trade with funds you can
+afford to lose. The authors are not responsible for any financial losses.
 
 ## 📝 License
 
-MIT License - see LICENSE file for details
+MIT — see [LICENSE](LICENSE).
 
 ## 🙏 Acknowledgments
 
-- [Polymarket](https://polymarket.com/) - Prediction market platform
-- [py-clob-client](https://github.com/Polymarket/py-clob-client) - Python API client
-
-## 📧 Support
-
-For issues and questions:
-- Open an issue on GitHub
-- Check documentation in `docs/`
-
----
-
-**Made with ❤️ for the Polymarket community**
+- [Polymarket](https://polymarket.com/) — prediction market platform
+- [py-clob-client](https://github.com/Polymarket/py-clob-client) — reference client the Rust signing is validated against

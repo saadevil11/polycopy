@@ -115,7 +115,7 @@ pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
     }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .user_agent("latebutfast/0.1")
+        .user_agent("polybotshadow/0.1")
         .build()
         .expect("http client");
 

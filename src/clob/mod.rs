@@ -1,7 +1,5 @@
-//! Polymarket CLOB integration: market data, signing, auth, and the live executor.
+//! Polymarket CLOB integration: EIP-712 v2 signing, L1/L2 auth, and the live
+//! order executor (used by the copytrader).
 pub mod auth;
 pub mod executor;
-pub mod positions;
-pub mod rest;
 pub mod signing;
-pub mod ws;

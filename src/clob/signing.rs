@@ -74,7 +74,9 @@ fn to_token_decimals(x: f64) -> u128 {
 
 /// True iff `price` is exactly representable at `tick` (a whole multiple of it).
 /// 0.999 is representable at tick 0.001/0.0001 but NOT at 0.01 — so we only place
-/// when the live tick can hit 0.999 exactly (we never settle for 0.99).
+/// when the live tick can hit a target exactly (we never settle for a worse fill).
+/// Kept as a validated helper for strategies that require exact-price placement.
+#[allow(dead_code)]
 pub fn price_representable(price: f64, tick: f64) -> bool {
     if tick <= 0.0 {
         return false;

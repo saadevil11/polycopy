@@ -19,6 +19,6 @@ RUN apt-get update \
 RUN mkdir -p /data
 ENV COPY_DATA_DIR=/data
 WORKDIR /app
-COPY --from=builder /app/target/release/latebutfast /usr/local/bin/latebutfast
+COPY --from=builder /app/target/release/polybotshadow /usr/local/bin/polybotshadow
 EXPOSE 8090
-ENTRYPOINT ["latebutfast"]
+ENTRYPOINT ["polybotshadow"]
