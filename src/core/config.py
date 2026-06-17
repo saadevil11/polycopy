@@ -59,7 +59,7 @@ class TradingConfig:
     # auto +1c resting sell, follow the target's exit only if they sell below
     # our +1c). See src/core/brownfox.py.
     use_brownfox_mode: bool = False
-    brownfox_trade_size_usd: float = 50.0         # Fixed $ size per market (not a % of target)
+    brownfox_trade_size_shares: float = 50.0      # Fixed SHARE count per market (not USD, not a % of target)
     brownfox_sell_markup: float = 0.01            # Resting sell at buy price + this (+1 cent)
     brownfox_reconcile_seconds: float = 3.0       # How often to reconcile buy/sell fills
     brownfox_market_sell_retries: int = 8         # Retries to guarantee the forced exit fully sells
@@ -176,7 +176,7 @@ trading_config = TradingConfig(
     weather_buy_ahead=float(os.getenv("WEATHER_BUY_AHEAD", "0.01")),
     # Brownfox mode
     use_brownfox_mode=os.getenv("USE_BROWNFOX_MODE", "false").lower() == "true",
-    brownfox_trade_size_usd=float(os.getenv("BROWNFOX_TRADE_SIZE_USD", "50")),
+    brownfox_trade_size_shares=float(os.getenv("BROWNFOX_TRADE_SIZE_SHARES", "50")),
     brownfox_sell_markup=float(os.getenv("BROWNFOX_SELL_MARKUP", "0.01")),
     brownfox_reconcile_seconds=float(os.getenv("BROWNFOX_RECONCILE_SECONDS", "3")),
     brownfox_market_sell_retries=int(os.getenv("BROWNFOX_MARKET_SELL_RETRIES", "8")),

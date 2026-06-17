@@ -193,7 +193,7 @@ class PolymarketCopyTradingBot:
         if self.brownfox is not None:
             self.brownfox.load()
             asyncio.create_task(self._brownfox_reconcile_loop())
-            logger.info(f"🦊 Brownfox mode ON (${self.trading_config.brownfox_trade_size_usd}/market, "
+            logger.info(f"🦊 Brownfox mode ON ({self.trading_config.brownfox_trade_size_shares} shares/market, "
                         f"sell +{self.trading_config.brownfox_sell_markup}, reconcile every "
                         f"{self.trading_config.brownfox_reconcile_seconds}s)")
 

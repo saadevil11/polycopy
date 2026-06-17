@@ -100,11 +100,9 @@ class BrownfoxManager:
 
     def _rehydrate(self, pos: BrownfoxPos):
         """Re-discover a position's live state from the exchange on restart."""
-        # Recompute the original buy size from config so 'buy fully filled' can
-        # still be inferred after a restart.
-        if pos.buy_price > 0:
-            pos.buy_size = max(self.MIN_SHARES,
-                               round(self.config.brownfox_trade_size_usd / pos.buy_price, 2))
+        # The original buy size is the fixed share count (independent of price),
+        # so 'buy fully filled' can still be inferred after a restart.
+        pos.buy_size = max(self.MIN_SHARES, round(float(self.config.brownfox_trade_size_shares), 2))
         try:
             buy_oid, buy_matched = self._find_order(pos.token_id, TradeSide.BUY, pos.buy_price)
             resting_sells = self._resting_sell_size(pos.token_id, pos.sell_price)
@@ -172,7 +170,8 @@ class BrownfoxManager:
                 self.entered.discard(market)
             return
 
-        size = round(self.config.brownfox_trade_size_usd / buy_price, 2)
+        # Fixed SHARE count per market (not a USD amount).
+        size = round(float(self.config.brownfox_trade_size_shares), 2)
         if size < self.MIN_SHARES:
             size = self.MIN_SHARES
 
@@ -184,8 +183,7 @@ class BrownfoxManager:
         self.positions[market] = pos
 
         logger.info(f"🦊 Brownfox: target bought {market[:10]} @ ${trade.price:.4f} -> "
-                    f"${self.config.brownfox_trade_size_usd} buy = {size:.2f} sh @ exact ${buy_price:.4f} "
-                    f"(sell @ ${sell_price:.4f})")
+                    f"buy {size:.2f} shares @ exact ${buy_price:.4f} (sell @ ${sell_price:.4f})")
         order_id = self.client.place_limit_order(token, TradeSide.BUY, size, buy_price)
         if order_id:
             pos.buy_order_id = order_id
@@ -313,17 +311,19 @@ class BrownfoxManager:
                     pos.buy_done = True
                     logger.info(f"🦊 Brownfox: selling started - cancelled remaining buy for {pos.market_id[:10]}")
 
-        # Keep resting sells covering ALL currently-held shares at +mark. Driven
-        # purely off live state: place the uncovered holdings (holdings - already
-        # resting). The exchange itself rejects a sell exceeding our balance, so
-        # this can never over-sell even if the holdings read briefly lags.
+        # Keep resting sells covering our shares at +mark, but NEVER for more
+        # than we actually hold. The sell size is verified against our live
+        # position (holdings, read fresh from the Data API) minus what's already
+        # resting, so total sells can never exceed holdings - we only ever sell
+        # the max we hold (same holdings-cap rule as the copytrader's SELLs).
         resting = self._resting_sell_size(token, pos.sell_price)
-        uncovered = round(holdings - resting, 2)
-        if uncovered >= self.MIN_SHARES:
-            oid = self.client.place_limit_order(token, TradeSide.SELL, uncovered, pos.sell_price)
+        uncovered = round(holdings - resting, 2)             # uncovered held shares
+        place_size = round(min(uncovered, holdings), 2)      # hard cap at holdings
+        if place_size >= self.MIN_SHARES:
+            oid = self.client.place_limit_order(token, TradeSide.SELL, place_size, pos.sell_price)
             if oid:
-                logger.info(f"🦊 Brownfox: resting sell {uncovered:.2f} sh @ ${pos.sell_price:.4f} "
-                            f"for {pos.market_id[:10]} (held {holdings:.2f})")
+                logger.info(f"🦊 Brownfox: resting sell {place_size:.2f} sh @ ${pos.sell_price:.4f} "
+                            f"for {pos.market_id[:10]} (held {holdings:.2f}, already resting {resting:.2f})")
 
         # Done when the buy is finished and we hold ~nothing with no resting sell.
         if pos.buy_done and holdings < self.EPS and resting < self.EPS:
