@@ -394,6 +394,32 @@ class PolymarketClient:
             logger.error(f"Failed to get current positions: {e}")
             return self._positions_cache or []
 
+    def get_trader_held_tokens(self, address: str) -> Optional[set]:
+        """Set of outcome-token ids a given trader currently holds (size>0), via
+        the Data API. Returns None on failure (caller should treat as 'unknown',
+        not 'exited'). Used to detect when the target has left a market."""
+        import requests
+        try:
+            url = f"{self.config.data_api_url}/positions"
+            resp = requests.get(url, params={"user": address, "sizeThreshold": 0.1}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, list):
+                return None
+            held = set()
+            for item in data:
+                try:
+                    if float(item.get('size', 0) or 0) > 0:
+                        asset = item.get('asset') or ''
+                        if asset:
+                            held.add(asset)
+                except (TypeError, ValueError):
+                    continue
+            return held
+        except Exception as e:
+            logger.debug(f"get_trader_held_tokens failed for {address}: {e}")
+            return None
+
     def get_token_holdings(self, token_id: str, use_cache: bool = True) -> float:
         """Return how many shares of a specific outcome token the wallet holds.
 
