@@ -93,7 +93,12 @@ async fn main() -> Result<()> {
             None => tracing::warn!("copytrader needs PRIVATE_KEY/auth — monitor only"),
         }
         tracing::info!("copytrader running — Ctrl-C to stop");
-        let h_dash = tokio::spawn(dashboard::serve(cfg.clone(), BotState::new(Utc::now())));
+        // Copytrader dashboard (positions + trades + portfolio), needs the executor.
+        let started = Utc::now();
+        let h_dash = match executor.clone() {
+            Some(exec) => tokio::spawn(copytrader::dashboard::serve(cfg.clone(), exec, store.clone(), started)),
+            None => tokio::spawn(dashboard::serve(cfg.clone(), BotState::new(Utc::now()))),
+        };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => tracing::info!("shutdown requested"),
             _ = h_dash => tracing::error!("dashboard exited"),

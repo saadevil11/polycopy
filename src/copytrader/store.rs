@@ -16,6 +16,17 @@ pub struct BrownfoxRecord {
     pub status: String, // ACTIVE / EXITING / DONE / ABORTED / STUCK
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TradeLog {
+    pub time: String,
+    pub market: String,
+    pub title: String,
+    pub side: String,   // BUY / SELL
+    pub size: f64,
+    pub price: f64,
+    pub status: String, // FILLED / RESTING / SKIPPED / FAILED
+}
+
 pub struct Store {
     dir: PathBuf,
     seen: Mutex<HashSet<String>>,
@@ -23,6 +34,8 @@ pub struct Store {
     /// market_id -> token_id for markets the general replicator has copied
     /// (drives MAX_POSITIONS counting + the auto-sell token set).
     copied: Mutex<HashMap<String, String>>,
+    /// recent copy trades for the dashboard (newest first, bounded).
+    trades: Mutex<Vec<TradeLog>>,
 }
 
 impl Store {
@@ -34,12 +47,25 @@ impl Store {
             read_json(&dir.join("brownfox.json")).unwrap_or_default();
         let copied: HashMap<String, String> =
             read_json(&dir.join("copied.json")).unwrap_or_default();
+        let trades: Vec<TradeLog> = read_json(&dir.join("trades.json")).unwrap_or_default();
         Store {
             dir,
             seen: Mutex::new(seen),
             brownfox: Mutex::new(brownfox),
             copied: Mutex::new(copied),
+            trades: Mutex::new(trades),
         }
+    }
+
+    // ── recent copy trades (for the dashboard) ────────────────────────────────
+    pub fn record_trade(&self, t: TradeLog) {
+        let mut v = self.trades.lock().unwrap();
+        v.insert(0, t);
+        v.truncate(200);
+        write_json(&self.dir.join("trades.json"), &*v);
+    }
+    pub fn recent_trades(&self) -> Vec<TradeLog> {
+        self.trades.lock().unwrap().clone()
     }
 
     // ── copied markets (general replicator) ───────────────────────────────────

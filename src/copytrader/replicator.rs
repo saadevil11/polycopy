@@ -13,11 +13,23 @@ use tracing::{info, warn};
 use crate::clob::executor::Executor;
 use crate::clob::signing::{snap_price, SIDE_SELL};
 use crate::config::Config;
-use crate::copytrader::store::Store;
+use crate::copytrader::store::{Store, TradeLog};
 use crate::copytrader::{Side, TargetTrade};
 use crate::copytrader::weather;
 
 const MIN_SHARES: f64 = 5.0;
+
+fn log_trade(store: &Store, t: &TargetTrade, side: &str, size: f64, price: f64, status: &str) {
+    store.record_trade(TradeLog {
+        time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        market: t.market_id.clone(),
+        title: t.title.clone(),
+        side: side.into(),
+        size,
+        price,
+        status: status.into(),
+    });
+}
 
 fn floor_to_tick(price: f64, tick: f64) -> f64 {
     if tick <= 0.0 {
@@ -73,6 +85,8 @@ async fn handle_buy(cfg: &Config, exec: &Arc<Executor>, store: &Arc<Store>, t: &
     if filled > 0.0 || !new_market {
         store.mark_copied(&t.market_id, &t.token_id);
     }
+    log_trade(store, t, "BUY", if filled > 0.0 { filled } else { size }, t.price,
+              if filled > 0.0 { "FILLED" } else { "RESTING" });
     info!("📋 copied BUY {:.2}/{:.2} sh in {} @ ~{:.4}", filled, size, &t.market_id[..t.market_id.len().min(10)], t.price);
 }
 
@@ -116,10 +130,9 @@ async fn handle_sell(cfg: &Config, exec: &Arc<Executor>, store: &Arc<Store>, t: 
         if t.price >= cfg.auto_sell_exact_threshold {
             // match their exact price
             let snapped = snap_price(t.price, tick);
-            match exec.place_gtc(&t.token_id, neg_risk, SIDE_SELL, snapped, copy_size, tick).await {
-                Ok(_) => info!("📋 SELL {:.2} @ exact {:.4} in {}", copy_size, snapped, &t.market_id[..t.market_id.len().min(10)]),
-                Err(e) => warn!("📋 exact SELL failed: {e}"),
-            }
+            let ok = exec.place_gtc(&t.token_id, neg_risk, SIDE_SELL, snapped, copy_size, tick).await.is_ok();
+            log_trade(store, t, "SELL", copy_size, snapped, if ok { "FILLED" } else { "FAILED" });
+            info!("📋 SELL {:.2} @ exact {:.4} in {} ({})", copy_size, snapped, &t.market_id[..t.market_id.len().min(10)], if ok {"ok"} else {"fail"});
             return;
         }
     }
@@ -127,12 +140,12 @@ async fn handle_sell(cfg: &Config, exec: &Arc<Executor>, store: &Arc<Store>, t: 
     // Off-price / no auto-sell: chase down (or GTC at their price).
     if cfg.weather_enabled {
         let sold = weather::chase_sell(exec, &t.token_id, neg_risk, t.price, copy_size, tick, cfg).await;
+        log_trade(store, t, "SELL", sold, t.price, if sold > 0.0 { "FILLED" } else { "RESTING" });
         info!("📋 copied SELL {:.2}/{:.2} (chase) in {}", sold, copy_size, &t.market_id[..t.market_id.len().min(10)]);
     } else {
         let snapped = snap_price(t.price, tick);
-        match exec.place_gtc(&t.token_id, neg_risk, SIDE_SELL, snapped, copy_size, tick).await {
-            Ok(_) => info!("📋 SELL {:.2} @ {:.4} in {}", copy_size, snapped, &t.market_id[..t.market_id.len().min(10)]),
-            Err(e) => warn!("📋 SELL failed: {e}"),
-        }
+        let ok = exec.place_gtc(&t.token_id, neg_risk, SIDE_SELL, snapped, copy_size, tick).await.is_ok();
+        log_trade(store, t, "SELL", copy_size, snapped, if ok { "FILLED" } else { "FAILED" });
+        info!("📋 SELL {:.2} @ {:.4} in {} ({})", copy_size, snapped, &t.market_id[..t.market_id.len().min(10)], if ok {"ok"} else {"fail"});
     }
 }

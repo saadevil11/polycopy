@@ -16,6 +16,18 @@ use crate::models::OutcomeToken;
 
 const BYTES32_ZERO: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+#[derive(Clone, serde::Serialize)]
+pub struct PositionInfo {
+    pub token_id: String,
+    pub title: String,
+    pub outcome: String,
+    pub size: f64,
+    pub avg_price: f64,
+    pub cur_price: f64,
+    pub value: f64,
+    pub pnl: f64,
+}
+
 pub struct Executor {
     client: reqwest::Client,
     wallet: LocalWallet,
@@ -462,6 +474,38 @@ impl Executor {
                     .sum()
             })
             .unwrap_or(0.0)
+    }
+
+    /// Open positions for the funder (for the dashboard), via the Data API.
+    /// Skips resolved/redeemable positions.
+    pub async fn positions(&self) -> Vec<PositionInfo> {
+        let url = format!("{}/positions?user={}&sizeThreshold=0.1", self.data_api_url, self.funder);
+        let v: Value = match self.client.get(&url).send().await {
+            Ok(r) => r.json().await.unwrap_or(Value::Null),
+            Err(_) => return Vec::new(),
+        };
+        let arr = match v.as_array() {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+        arr.iter()
+            .filter(|p| p.get("redeemable").and_then(|x| x.as_bool()) != Some(true))
+            .filter(|p| num(p, "size") > 0.0)
+            .map(|p| {
+                let size = num(p, "size");
+                let cur = num(p, "curPrice");
+                PositionInfo {
+                    token_id: p.get("asset").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    title: p.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    outcome: p.get("outcome").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    size,
+                    avg_price: num(p, "avgPrice"),
+                    cur_price: cur,
+                    value: size * cur,
+                    pnl: num(p, "cashPnl"),
+                }
+            })
+            .collect()
     }
 
     /// Set of outcome-token ids a given address currently holds (size>0), via the

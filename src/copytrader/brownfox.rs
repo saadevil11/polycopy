@@ -13,7 +13,7 @@ use tracing::{info, warn};
 use crate::clob::executor::Executor;
 use crate::clob::signing::{SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
-use crate::copytrader::store::{BrownfoxRecord, Store};
+use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
 use crate::copytrader::{Side, TargetTrade};
 
 const EPS: f64 = 0.01;
@@ -176,6 +176,15 @@ impl Brownfox {
         match self.exec.place_gtc(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
             Ok(oid) => {
                 pos.buy_order_id = Some(oid);
+                self.store.record_trade(TradeLog {
+                    time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    market: market.clone(),
+                    title: t.title.clone(),
+                    side: "BUY".into(),
+                    size,
+                    price: buy_price,
+                    status: "RESTING".into(),
+                });
                 st.positions.insert(market, pos);
             }
             Err(e) => {
