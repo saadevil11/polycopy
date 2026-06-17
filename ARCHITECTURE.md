@@ -4,12 +4,12 @@
 
 `polybotshadow` is a **Rust** Polymarket **copytrader**: it follows a target
 trader and replicates their fills through the validated Polymarket **CLOB V2**
-signing path. It is the Rust port of the original Python copytrader (preserved,
-unmodified and never executed, in [`legacy-python/`](legacy-python/)) — same
+signing path. It is the Rust port of the original Python copytrader — same
 behaviour, plus the requested **brownfox** strategy, now entirely in Rust.
 
-There is **no sniper** here. The whole project is Rust; Python is kept only as a
-reference archive.
+The **entire repo is Rust** — there is no Python and no sniper in the tree. The
+original Python copytrader exists only in git history (commit `823b1d4` and
+earlier) if it is ever needed for reference; nothing here executes Python.
 
 Two strategies, selected by env:
 
@@ -155,8 +155,8 @@ see [`deploy/AWS_DEPLOY.md`](deploy/AWS_DEPLOY.md) and
   same fixed inputs, on both exchanges. Sell amounts match too (`cargo test`).
 - Live order placement stays gated behind `DRY_RUN=false` **and**
   `LIVE_SIGNING_VALIDATED=true` (config refuses to start live otherwise).
-- `legacy-python/` is the original copytrader, kept as a reference archive — it is
-  **never executed**; everything that runs is Rust.
+- The entire project is Rust. The original Python copytrader is **not** in the
+  repo; it lives only in git history (commit `823b1d4` and earlier) if ever needed.
 
 ### Remaining before live (operational, not code)
 1. Fund the proxy wallet with **pUSD** and set **ERC-20 allowance** to the V2
@@ -169,7 +169,8 @@ see [`deploy/AWS_DEPLOY.md`](deploy/AWS_DEPLOY.md) and
 
 1. **Never** place an order while `DRY_RUN=true` — only log it. Live placement
    requires `LIVE_SIGNING_VALIDATED=true`.
-2. **Everything is Rust.** `legacy-python/` is an archive only — never run it.
+2. **Everything is Rust.** There is no Python in the repo — the whole project is
+   Rust; the original lives only in git history.
 3. Sells are **capped at our actual holdings** — never over-sell.
 4. **No double-buying:** brownfox reconstructs state from holdings + open orders
    and the store dedups; a restart must never re-enter a held market.

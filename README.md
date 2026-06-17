@@ -3,9 +3,9 @@
 A Rust Polymarket **copytrader**: it follows a target trader and replicates their
 fills in real time through the validated Polymarket **CLOB V2** signing path.
 
-This is the Rust port of the original Python copytrader. The Python project is
-preserved, unmodified and **never executed**, in [`legacy-python/`](legacy-python/)
-as a reference archive — everything that runs here is Rust.
+This is the Rust port of the original Python copytrader. **The entire project is
+Rust** — there is no Python in the repo; the original lives only in git history
+(commit `823b1d4` and earlier) if ever needed for reference.
 
 ![Rust](https://img.shields.io/badge/rust-2021-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -103,8 +103,7 @@ polybotshadow-1/
 │       └── dashboard.rs    # axum: GET / (HTML) + GET /api/state (JSON)
 ├── deploy/                 # AWS_DEPLOY.md + polybotshadow.service (systemd)
 ├── Dockerfile              # Linux build + slim runtime
-├── ARCHITECTURE.md               # full design + verified CLOB V2 integration notes
-└── legacy-python/          # the original Python copytrader — ARCHIVE, never run
+└── ARCHITECTURE.md               # full design + verified CLOB V2 integration notes
 ```
 
 ## ☁️ Deployment
