@@ -1,0 +1,39 @@
+[package]
+name = "latebutfast"
+version = "0.1.0"
+edition = "2021"
+description = "Rust Polymarket near-resolution sniper: rest a 0.999 GTC buy the instant a fast-resolving market's ask hits 0.999/1.00"
+
+# Deps are added per phase so each `cargo build` is fast and the GNU toolchain
+# links self-contained (no Visual Studio / no C compiler). Phase 1 = pure Rust.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# phase 2 — data / discovery / dashboard (pure-Rust: native-tls = SChannel on Windows)
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+dashmap = "6"
+axum = "0.7"
+futures-util = "0.3"
+
+# phase 3 — signing / auth / ws feed (pure-Rust: k256 + native-tls/SChannel)
+ethers-core = "2"
+ethers-signers = { version = "2", default-features = false }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+tokio-tungstenite = { version = "0.23", default-features = false, features = ["connect", "native-tls"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
