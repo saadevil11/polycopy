@@ -38,6 +38,8 @@ struct Pos {
     /// the Data API). Until then, an absence is treated as positions-API lag —
     /// NOT an exit — so the lag window right after entry can't false-abort us.
     target_confirmed_held: bool,
+    title: String,   // human-readable market name (for logging)
+    outcome: String, // outcome we're trading, e.g. "Yes" / "No"
 }
 
 #[derive(Default)]
@@ -98,6 +100,8 @@ impl Brownfox {
                 peak_holdings: 0.0,
                 exit_attempts: 0,
                 target_confirmed_held: false,
+                title: rec.title.clone(),
+                outcome: String::new(),
             };
             // Re-discover live state from the exchange.
             let (buy_oid, buy_matched) = self.find_order(&pos.token_id, "BUY", pos.buy_price).await;
@@ -136,7 +140,7 @@ impl Brownfox {
             return;
         }
         if st.entered.contains(&market) || st.positions.contains_key(&market) {
-            info!("🦊 brownfox: already took our one buy in {} - ignoring", short(&market));
+            info!("🦊 brownfox: already hold our one position in {} — ignoring repeat target buy", label(&t.title, &t.outcome, &market));
             return;
         }
         st.entered.insert(market.clone());
@@ -154,7 +158,7 @@ impl Brownfox {
             sell_price = round10(buy_price + tick);
         }
         if sell_price > max_price + 1e-9 {
-            info!("🦊 brownfox: buy @ {:.4} too high to place +markup sell - skipping {}", buy_price, short(&market));
+            info!("🦊 brownfox: skipping {} — buy @ {:.4} too high to place a +markup sell", label(&t.title, &t.outcome, &market), buy_price);
             st.entered.remove(&market);
             return;
         }
@@ -164,7 +168,13 @@ impl Brownfox {
         // Persist the reservation + state BEFORE placing (no crash double-buy).
         self.store.record_brownfox(
             &market,
-            BrownfoxRecord { token_id: t.token_id.clone(), buy_price, sell_price, status: "ACTIVE".into() },
+            BrownfoxRecord {
+                token_id: t.token_id.clone(),
+                buy_price,
+                sell_price,
+                status: "ACTIVE".into(),
+                title: t.title.clone(),
+            },
         );
         let mut pos = Pos {
             market_id: market.clone(),
@@ -181,8 +191,10 @@ impl Brownfox {
             peak_holdings: 0.0,
             exit_attempts: 0,
             target_confirmed_held: false,
+            title: t.title.clone(),
+            outcome: t.outcome.clone(),
         };
-        info!("🦊 brownfox: target bought {} @ {:.4} -> buy {} sh @ {:.4} (sell @ {:.4})", short(&market), t.price, size, buy_price, sell_price);
+        info!("🦊 brownfox: target BOUGHT {} @ {:.4} ({:.0} sh) → placing {} sh buy @ {:.4}, resting sell @ {:.4}", label(&t.title, &t.outcome, &market), t.price, t.size, size, buy_price, sell_price);
         match self.exec.place_gtc(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
             Ok(oid) => {
                 pos.buy_order_id = Some(oid);
@@ -202,10 +214,10 @@ impl Brownfox {
                 let (found, _) = self.find_order(&pos.token_id, "BUY", buy_price).await;
                 if let Some(oid) = found {
                     pos.buy_order_id = Some(oid);
-                    warn!("🦊 brownfox: place errored ({e}) but found resting buy - adopting");
+                    warn!("🦊 brownfox: place errored ({e}) but found resting buy in {} - adopting", label(&t.title, &t.outcome, &market));
                     st.positions.insert(market, pos);
                 } else {
-                    warn!("🦊 brownfox: buy placement failed ({e}) - releasing market");
+                    warn!("🦊 brownfox: buy placement failed in {} ({e}) - releasing market", label(&t.title, &t.outcome, &market));
                     self.store.delete_brownfox(&market);
                     st.entered.remove(&market);
                 }
@@ -226,7 +238,7 @@ impl Brownfox {
         let holdings = self.exec.token_holdings(&pos.token_id).await;
 
         if t.price >= pos.sell_price - 1e-9 {
-            info!("🦊 brownfox: target sold @ {:.4} >= our sell {:.4} - resting sell handles it", t.price, pos.sell_price);
+            info!("🦊 brownfox: target SOLD {} @ {:.4} (≥ our sell {:.4}) — resting sell handles it", label(&t.title, &t.outcome, &market), t.price, pos.sell_price);
             self.write(st, pos);
             return;
         }
@@ -236,13 +248,13 @@ impl Brownfox {
                 pos.buy_done = true;
                 if self.exec.token_holdings(&pos.token_id).await < EPS {
                     self.set_status(st, &mut pos, "ABORTED");
-                    info!("🦊 brownfox: target exited {} before our buy filled - cancelled", short(&market));
+                    info!("🦊 brownfox: target EXITED {} before our buy filled — cancelled", label(&t.title, &t.outcome, &market));
                     self.write(st, pos);
                     return;
                 }
             }
         }
-        info!("🦊 brownfox: target sold @ {:.4} below +mark {:.4} - forcing exit", t.price, pos.sell_price);
+        info!("🦊 brownfox: target SOLD {} @ {:.4} (below our +mark {:.4}) — forcing exit", label(&t.title, &t.outcome, &market), t.price, pos.sell_price);
         pos.status = "EXITING".into();
         self.store.update_brownfox_status(&market, "EXITING");
         self.forced_exit(&mut pos).await;
@@ -295,7 +307,7 @@ impl Brownfox {
                 let (bid, _) = self.exec.book(&token).await;
                 if holdings < EPS {
                     self.set_status(st, pos, "ABORTED");
-                    info!("🦊 brownfox: target left {} before our buy filled - cancelled", short(&pos.market_id));
+                    info!("🦊 brownfox: target left {} before our buy filled — cancelled", label(&pos.title, &pos.outcome, &pos.market_id));
                     return;
                 }
                 if holdings < MIN_SHARES {
@@ -304,7 +316,7 @@ impl Brownfox {
                     return;
                 }
                 if bid < pos.sell_price - 1e-9 {
-                    info!("🦊 brownfox: target left {} & market below +mark - forcing exit", short(&pos.market_id));
+                    info!("🦊 brownfox: target left {} & market below +mark — forcing exit", label(&pos.title, &pos.outcome, &pos.market_id));
                     pos.status = "EXITING".into();
                     self.store.update_brownfox_status(&pos.market_id, "EXITING");
                     self.forced_exit(pos).await;
@@ -323,7 +335,7 @@ impl Brownfox {
             let started = (pos.peak_holdings - holdings > EPS) || (bid >= pos.sell_price - 1e-9);
             if started && self.exec.cancel_confirmed(pos.buy_order_id.as_deref().unwrap_or(""), &token).await {
                 pos.buy_done = true;
-                info!("🦊 brownfox: selling started - cancelled remaining buy for {}", short(&pos.market_id));
+                info!("🦊 brownfox: selling started — cancelled remaining buy for {}", label(&pos.title, &pos.outcome, &pos.market_id));
             }
         }
 
@@ -333,17 +345,17 @@ impl Brownfox {
         let uncovered = round2(holdings - resting);
         if uncovered >= MIN_SHARES {
             match self.exec.place_gtc(&token, pos.neg_risk, SIDE_SELL, pos.sell_price, uncovered, pos.tick).await {
-                Ok(_) => info!("🦊 brownfox: resting sell {:.2} @ {:.4} for {} (held {:.2})", uncovered, pos.sell_price, short(&pos.market_id), holdings),
-                Err(e) => warn!("🦊 brownfox: sell place failed for {}: {e}", short(&pos.market_id)),
+                Ok(_) => info!("🦊 brownfox: resting sell {:.2} sh @ {:.4} for {} (holding {:.2})", uncovered, pos.sell_price, label(&pos.title, &pos.outcome, &pos.market_id), holdings),
+                Err(e) => warn!("🦊 brownfox: sell place failed for {}: {e}", label(&pos.title, &pos.outcome, &pos.market_id)),
             }
         }
 
         if pos.buy_done && holdings < EPS && resting < EPS {
             self.set_status(st, pos, "DONE");
-            info!("🦊 brownfox: {} fully closed", short(&pos.market_id));
+            info!("🦊 brownfox: {} fully closed ✅", label(&pos.title, &pos.outcome, &pos.market_id));
         } else if pos.buy_done && holdings < MIN_SHARES && resting < EPS && pos.bought > EPS {
             self.set_status(st, pos, "DONE");
-            info!("🦊 brownfox: {} residual dust {:.2} - closing", short(&pos.market_id), holdings);
+            info!("🦊 brownfox: {} residual dust {:.2} sh — closing", label(&pos.title, &pos.outcome, &pos.market_id), holdings);
         }
     }
 
@@ -357,7 +369,7 @@ impl Brownfox {
             pos.buy_done = true;
         }
         if !sells_gone || !pos.buy_done {
-            warn!("🦊 brownfox: {} orders not all confirmed cancelled - retry next cycle", short(&pos.market_id));
+            warn!("🦊 brownfox: {} orders not all confirmed cancelled — retry next cycle", label(&pos.title, &pos.outcome, &pos.market_id));
             if pos.exit_attempts >= 12 {
                 pos.status = "STUCK".into();
                 self.store.update_brownfox_status(&pos.market_id, "STUCK");
@@ -374,13 +386,13 @@ impl Brownfox {
         if left < MIN_SHARES {
             pos.status = "DONE".into();
             self.store.update_brownfox_status(&pos.market_id, "DONE");
-            info!("🦊 brownfox: forced exit complete for {}", short(&pos.market_id));
+            info!("🦊 brownfox: forced exit complete for {} ✅", label(&pos.title, &pos.outcome, &pos.market_id));
         } else if pos.exit_attempts >= 12 {
             pos.status = "STUCK".into();
             self.store.update_brownfox_status(&pos.market_id, "STUCK");
-            warn!("⛔ brownfox: could NOT exit {:.2} sh in {} - manual action", left, short(&pos.market_id));
+            warn!("⛔ brownfox: could NOT exit {:.2} sh in {} — MANUAL ACTION NEEDED", left, label(&pos.title, &pos.outcome, &pos.market_id));
         } else {
-            warn!("🦊 brownfox: forced exit left {:.2} sh in {} - retry", left, short(&pos.market_id));
+            warn!("🦊 brownfox: forced exit left {:.2} sh in {} — retry", left, label(&pos.title, &pos.outcome, &pos.market_id));
         }
     }
 
@@ -500,6 +512,25 @@ impl Brownfox {
 
 fn short(s: &str) -> &str {
     &s[..s.len().min(10)]
+}
+/// Human-readable market label for logs: `"<title> · <outcome> [0xabc123…]"`,
+/// falling back to just the short conditionId when the title is unknown (e.g. a
+/// position resumed from an older state file that didn't persist the title).
+fn label(title: &str, outcome: &str, market: &str) -> String {
+    let id = short(market);
+    if title.is_empty() {
+        return format!("[{id}]");
+    }
+    let t: String = if title.chars().count() > 60 {
+        title.chars().take(59).chain(std::iter::once('…')).collect()
+    } else {
+        title.to_string()
+    };
+    if outcome.is_empty() {
+        format!("\"{t}\" [{id}]")
+    } else {
+        format!("\"{t}\" · {outcome} [{id}]")
+    }
 }
 fn round10(x: f64) -> f64 {
     (x * 1e10).round() / 1e10

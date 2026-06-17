@@ -14,6 +14,8 @@ pub struct BrownfoxRecord {
     pub buy_price: f64,
     pub sell_price: f64,
     pub status: String, // ACTIVE / EXITING / DONE / ABORTED / STUCK
+    #[serde(default)]
+    pub title: String, // human-readable market name (default keeps old files loadable)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

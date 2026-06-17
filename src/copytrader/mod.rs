@@ -34,5 +34,6 @@ pub struct TargetTrade {
     pub side: Side,
     pub price: f64,
     pub size: f64,
-    pub title: String,
+    pub title: String,  // human-readable market name
+    pub outcome: String, // outcome bought/sold, e.g. "Yes" / "No"
 }

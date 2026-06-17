@@ -103,7 +103,7 @@ async fn handle_ws_frame(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTra
     }
     store.mark_seen(&id);
     if let Some(trade) = parse_trade(payload) {
-        debug!("ws target {:?} {:.2} @ {:.4} {}", trade.side, trade.size, trade.price, trade.title);
+        info!("👁  target {}", trade_line(&trade));
         let _ = tx.send(trade).await;
     }
 }
@@ -149,7 +149,7 @@ pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
             }
             store.mark_seen(&id);
             if let Some(t) = parse_trade(it) {
-                debug!("target {:?} {:.2} @ {:.4} {}", t.side, t.size, t.price, t.title);
+                info!("👁  target {}", trade_line(&t));
                 let _ = tx.send(t).await;
             }
         }
@@ -200,6 +200,7 @@ fn parse_trade(it: &Value) -> Option<TargetTrade> {
         price: num(it, "price"),
         size: num(it, "size"),
         title: it.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        outcome: it.get("outcome").and_then(|x| x.as_str()).unwrap_or("").to_string(),
     })
 }
 
@@ -209,4 +210,19 @@ fn num(v: &Value, key: &str) -> f64 {
         Some(Value::String(s)) => s.parse().unwrap_or(0.0),
         _ => 0.0,
     }
+}
+
+/// One-line, human-readable summary of a detected target trade for the logs.
+fn trade_line(t: &TargetTrade) -> String {
+    let side = match t.side {
+        Side::Buy => "BUY ",
+        Side::Sell => "SELL",
+    };
+    let market = if t.title.is_empty() {
+        "(unknown market)".to_string()
+    } else {
+        let oc = if t.outcome.is_empty() { String::new() } else { format!(" · {}", t.outcome) };
+        format!("\"{}\"{}", t.title, oc)
+    };
+    format!("{side} {:.2} sh @ {:.4}  {market}", t.size, t.price)
 }
