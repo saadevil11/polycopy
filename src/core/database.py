@@ -119,6 +119,16 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to record brownfox market {market_id}: {e}")
 
+    def delete_brownfox_market(self, market_id: str) -> None:
+        """Remove a market's guard row (e.g. the buy never actually placed) so a
+        later target buy can retry it."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('DELETE FROM brownfox_markets WHERE market_id = ?', (market_id,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to delete brownfox market {market_id}: {e}")
+
     def update_brownfox_status(self, market_id: str, status: str) -> None:
         try:
             with sqlite3.connect(self.db_path) as conn:

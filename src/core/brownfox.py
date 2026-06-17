@@ -73,8 +73,13 @@ class BrownfoxManager:
         except Exception as e:
             logger.warning(f"Brownfox: could not load entered markets: {e}")
             self.entered = set()
+        rows = []
         try:
-            for row in self.db.get_active_brownfox_positions():
+            rows = self.db.get_active_brownfox_positions()
+        except Exception as e:
+            logger.warning(f"Brownfox: could not read active positions: {e}")
+        for row in rows:
+            try:
                 m = row.get('market_id')
                 if not m:
                     continue
@@ -85,14 +90,21 @@ class BrownfoxManager:
                     status=row.get('status') or 'ACTIVE',
                 )
                 self._rehydrate(pos)
+                # Always register the position so the reconcile loop manages it,
+                # even if _rehydrate hit an error (it self-heals from live state).
                 self.positions[m] = pos
-            logger.info(f"🦊 Brownfox: loaded {len(self.entered)} entered markets, "
-                        f"resumed {len(self.positions)} active positions")
-        except Exception as e:
-            logger.warning(f"Brownfox: could not rebuild positions: {e}")
+            except Exception as e:
+                logger.warning(f"Brownfox: could not rebuild position {row.get('market_id')}: {e}")
+        logger.info(f"🦊 Brownfox: loaded {len(self.entered)} entered markets, "
+                    f"resumed {len(self.positions)} active positions")
 
     def _rehydrate(self, pos: BrownfoxPos):
         """Re-discover a position's live state from the exchange on restart."""
+        # Recompute the original buy size from config so 'buy fully filled' can
+        # still be inferred after a restart.
+        if pos.buy_price > 0:
+            pos.buy_size = max(self.MIN_SHARES,
+                               round(self.config.brownfox_trade_size_usd / pos.buy_price, 2))
         try:
             buy_oid, buy_matched = self._find_order(pos.token_id, TradeSide.BUY, pos.buy_price)
             resting_sells = self._resting_sell_size(pos.token_id, pos.sell_price)
@@ -103,10 +115,11 @@ class BrownfoxManager:
             else:
                 pos.buy_done = True
                 pos.bought = holdings + resting_sells  # everything we still have / have up for sale
-            pos.peak_holdings = holdings + resting_sells
-            # A STUCK position from before a restart gets a fresh exit attempt -
-            # book conditions may have changed. (Sells are holdings-driven, so
-            # no per-order baseline to restore.)
+            # peak_holdings is ONLY the owned balance - resting sells are not a
+            # drop from peak. Counting them would falsely trigger 'selling
+            # started' on the first reconcile and cancel a still-needed buy.
+            pos.peak_holdings = holdings
+            # A STUCK position from before a restart gets a fresh exit attempt.
             if pos.status == "STUCK":
                 pos.status = "EXITING"
                 pos.exit_attempts = 0
@@ -186,9 +199,14 @@ class BrownfoxManager:
             pos.buy_order_id = found_oid
             logger.warning(f"🦊 Brownfox: placement returned None but found resting buy {found_oid} - adopting")
             return
-        logger.error("🦊 Brownfox: buy placement failed and no resting order found - marking aborted")
-        pos.status = "ABORTED"
-        self.db.update_brownfox_status(market, "ABORTED")
+        # No order placed and none resting -> the buy genuinely failed. Release
+        # the reservation (drop the guard row + in-memory entry) so a later
+        # target buy in this market can retry, rather than permanently blocking it.
+        logger.error("🦊 Brownfox: buy placement failed and no resting order found - releasing market")
+        self.positions.pop(market, None)
+        self.db.delete_brownfox_market(market)
+        async with self._entered_lock:
+            self.entered.discard(market)
 
     # ---- target sell -------------------------------------------------------
 
@@ -258,24 +276,31 @@ class BrownfoxManager:
 
         # Target-exit detection independent of receiving their SELL event (the
         # event can be missed/deduped/lost on restart). If the target no longer
-        # holds this token:
-        #   - our buy hasn't filled -> cancel it (don't enter a market they left)
-        #   - we hold shares and the market is below our +1c -> mirror their exit
+        # holds this token, we never want a live buy here - cancel it first, then
+        # resolve our position by how much we hold.
         if not self._target_holds(token):
-            if pos.bought < self.EPS and not pos.buy_done:
+            if not pos.buy_done:
                 if self._confirm_cancel(pos.buy_order_id, token):
                     pos.buy_done = True
+            if pos.buy_done:
+                bid = self.client._get_best_price(token, TradeSide.SELL)
+                if holdings < self.EPS:
                     self._set_status(pos, "ABORTED")
                     logger.info(f"🦊 Brownfox: target left {pos.market_id[:10]} before our buy filled - cancelled")
                     return
-            elif holdings >= self.MIN_SHARES:
-                bid = self.client._get_best_price(token, TradeSide.SELL)
+                if holdings < self.MIN_SHARES:
+                    self._cancel_all_sells(pos)
+                    self._set_status(pos, "DONE")
+                    logger.info(f"🦊 Brownfox: target left {pos.market_id[:10]}, {holdings:.2f} sh dust - closing")
+                    return
                 if bid is None or bid < pos.sell_price - 1e-9:
                     logger.info(f"🦊 Brownfox: target left {pos.market_id[:10]} and market below our +mark "
                                 f"- forcing exit")
                     self._set_status(pos, "EXITING")
                     await self._forced_exit(pos)
                     return
+                # else market is at/above our +1c -> let the resting sell ride
+                # (fall through to normal sell management below)
 
         # Cancel the rest of the buy once selling has started (price reached our
         # sell level, or our holdings dropped from peak). Only on CONFIRMED cancel.
