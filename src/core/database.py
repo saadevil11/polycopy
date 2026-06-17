@@ -71,6 +71,17 @@ class Database:
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+
+                # Brownfox: markets we've already taken our one buy in (the
+                # one-buy-per-market guard must persist across restarts).
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS brownfox_markets (
+                        market_id TEXT PRIMARY KEY,
+                        token_id TEXT,
+                        buy_price REAL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
                 
                 # Create indexes
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_target_trades_timestamp ON target_trades(timestamp)')
@@ -84,6 +95,29 @@ class Database:
             logger.error(f"Failed to initialize database: {e}")
             raise
     
+    def record_brownfox_market(self, market_id: str, token_id: str, buy_price: float) -> None:
+        """Persist that we've taken our one brownfox buy in this market."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    'INSERT OR IGNORE INTO brownfox_markets (market_id, token_id, buy_price) VALUES (?, ?, ?)',
+                    (market_id, token_id, buy_price)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to record brownfox market {market_id}: {e}")
+
+    def get_brownfox_markets(self) -> set:
+        """Set of market_ids we've already taken our one brownfox buy in."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT market_id FROM brownfox_markets')
+                return {row[0] for row in cursor.fetchall() if row[0]}
+        except Exception as e:
+            logger.error(f"Failed to load brownfox markets: {e}")
+            return set()
+
     def has_executed_trade(self, trade_id: str) -> bool:
         """Check if a trade has already been attempted (executed, failed, or skipped)"""
         try:

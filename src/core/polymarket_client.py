@@ -576,6 +576,66 @@ class PolymarketClient:
             logger.error(f"sell_at_exact_price failed for {token_id}: {e}")
             return None
 
+    def market_sell_all(self, token_id: str, known_holdings: Optional[float] = None,
+                        max_retries: int = 8) -> Tuple[float, float]:
+        """Aggressively sell our entire holding of a token into the book,
+        retrying/walking down until sold. Returns (shares_sold, shares_left).
+
+        Tracks the remaining size LOCALLY (decrementing by each order's matched
+        amount) instead of re-reading the Data API every loop - the API lags
+        seconds behind a fill, so re-reading would risk re-selling shares we
+        already sold. Re-syncs from a fresh read only on a balance error.
+        """
+        import time as _time
+        remaining = known_holdings if (known_holdings and known_holdings > 0) \
+            else self.get_token_holdings(token_id, use_cache=False)
+        sold_total = 0.0
+        if remaining < 0.01:
+            return (0.0, 0.0)
+
+        tick = self._get_tick_size(token_id)
+        for attempt in range(max_retries):
+            if remaining < 0.01:
+                break
+            bid = self._get_best_price(token_id, TradeSide.SELL)  # best bid
+            if not bid or bid <= 0:
+                _time.sleep(1.0)
+                continue
+            # Sweep a few levels below the best bid so it crosses multiple bid
+            # levels at once; fills happen at the actual (better) bids top-down.
+            sweep_price = round(max(self._round_to_tick(bid, tick) - 0.03, tick), 10)
+            oid = self.place_limit_order(token_id, TradeSide.SELL, remaining, sweep_price)
+            if not oid:
+                err = (self._last_place_error or "").lower()
+                if "balance" in err or "allowance" in err:
+                    # Our remaining estimate is too high - re-sync from chain.
+                    remaining = self.get_token_holdings(token_id, use_cache=False)
+                _time.sleep(0.5)
+                continue
+            _time.sleep(1.0)
+            status = self.get_order_status(oid)
+            matched = 0.0
+            if status:
+                try:
+                    matched = float(status.get('size_matched', 0) or 0)
+                except (TypeError, ValueError):
+                    matched = 0.0
+            sold_total += matched
+            remaining = max(0.0, remaining - matched)
+            # Cancel any unfilled remainder of this order before re-pricing lower.
+            if self._find_open_order(oid, token_id) is not None:
+                self.cancel_order(oid)
+            logger.info(f"🔻 Market-sell {token_id[:10]}: attempt {attempt+1}, sold {matched:.2f} "
+                        f"@ ~${sweep_price:.4f}, ~{remaining:.2f} left")
+
+        actual_left = self.get_token_holdings(token_id, use_cache=False)
+        if actual_left >= 0.01:
+            logger.warning(f"🔻 Market-sell {token_id[:10]}: {actual_left:.2f} shares still held "
+                           f"after {max_retries} attempts")
+        else:
+            logger.success(f"🔻 Market-sell {token_id[:10]}: fully exited ({sold_total:.2f} sold)")
+        return (sold_total, actual_left)
+
     def cancel_auto_sell_for_token(self, token_id: str, price: float) -> int:
         """Cancel resting SELL orders for a token at the auto-sell price (used
         when the target sells at a non-standard price so we re-sell actively)."""

@@ -55,9 +55,19 @@ class TradingConfig:
     weather_max_buy_price: float = 0.996          # Don't chase a BUY above this (avoid overpaying near $1)
     weather_min_sell_price: float = 0.004         # Don't chase a SELL below this
 
+    # Brownfox mode (one fixed-size buy per market at the target's exact price,
+    # auto +1c resting sell, follow the target's exit only if they sell below
+    # our +1c). See src/core/brownfox.py.
+    use_brownfox_mode: bool = False
+    brownfox_trade_size_usd: float = 50.0         # Fixed $ size per market (not a % of target)
+    brownfox_sell_markup: float = 0.01            # Resting sell at buy price + this (+1 cent)
+    brownfox_reconcile_seconds: float = 3.0       # How often to reconcile buy/sell fills
+    brownfox_market_sell_retries: int = 8         # Retries to guarantee the forced exit fully sells
+
     # Trade monitoring source. The live WebSocket is fastest but Polymarket's
     # edge rate-limits datacenter IPs (HTTP 429); set this True to poll the Data
     # API instead, which is reachable from those IPs.
+    # (Brownfox/weather both honour this WS-vs-REST choice.)
     use_polling_monitor: bool = False
 
     # Stale-order sweep: cancel resting orders once their market reaches this
@@ -164,6 +174,12 @@ trading_config = TradingConfig(
     weather_max_chases=int(os.getenv("WEATHER_MAX_CHASES", "5")),
     weather_fill_wait_seconds=float(os.getenv("WEATHER_FILL_WAIT_SECONDS", "2.0")),
     weather_buy_ahead=float(os.getenv("WEATHER_BUY_AHEAD", "0.01")),
+    # Brownfox mode
+    use_brownfox_mode=os.getenv("USE_BROWNFOX_MODE", "false").lower() == "true",
+    brownfox_trade_size_usd=float(os.getenv("BROWNFOX_TRADE_SIZE_USD", "50")),
+    brownfox_sell_markup=float(os.getenv("BROWNFOX_SELL_MARKUP", "0.01")),
+    brownfox_reconcile_seconds=float(os.getenv("BROWNFOX_RECONCILE_SECONDS", "3")),
+    brownfox_market_sell_retries=int(os.getenv("BROWNFOX_MARKET_SELL_RETRIES", "8")),
     # Monitor source
     use_polling_monitor=os.getenv("USE_POLLING_MONITOR", "false").lower() == "true",
     # Stale-order sweep

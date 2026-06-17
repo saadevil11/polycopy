@@ -15,6 +15,7 @@ from src.monitors.trader_monitor import TraderMonitor
 from src.monitors.alternative_trader_monitor import AlternativeTraderMonitor
 from src.monitors.websocket_trader_monitor import WebSocketTraderMonitor
 from src.monitors.data_api_trader_monitor import DataAPITraderMonitor
+from src.core.brownfox import BrownfoxManager
 from src.core.trade_replicator import TradeReplicator
 from src.core.risk_manager import RiskManager
 from src.core.database import Database
@@ -41,6 +42,10 @@ class PolymarketCopyTradingBot:
         self.trade_replicator = TradeReplicator(self.polymarket_client, self.risk_manager)
         self.position_merger = PositionMerger(self.polymarket_client)
         self.auto_redeemer = None  # Initialize later after client is ready
+
+        # Brownfox mode manager (one fixed-size buy per market, +1c sell)
+        self.brownfox = (BrownfoxManager(self.polymarket_client, self.database, self.trading_config)
+                         if self.trading_config.use_brownfox_mode else None)
         
         # Trade detection: real-time WebSocket by default, or Data-API polling
         # when USE_POLLING_MONITOR=true (needed on hosts whose IP the WS edge
@@ -177,15 +182,24 @@ class PolymarketCopyTradingBot:
         asyncio.create_task(self._risk_monitoring_loop())
 
         # Start stale-order sweep (cancel resting orders once their market
-        # reaches the cancel price, e.g. a buy stranded below a market near 1.0)
-        if self.trading_config.stale_order_sweep_enabled:
+        # reaches the cancel price, e.g. a buy stranded below a market near 1.0).
+        # Off in brownfox mode - brownfox manages its own resting buys.
+        if self.trading_config.stale_order_sweep_enabled and not self.trading_config.use_brownfox_mode:
             asyncio.create_task(self._stale_order_sweep_loop())
             logger.info(f"🧹 Stale-order sweep on (cancel at >= ${self.trading_config.stale_order_cancel_price}, "
                         f"every {self.trading_config.stale_order_sweep_seconds}s)")
 
+        # Start Brownfox reconcile loop (manages buy fills -> +1c sells -> exits)
+        if self.brownfox is not None:
+            self.brownfox.load()
+            asyncio.create_task(self._brownfox_reconcile_loop())
+            logger.info(f"🦊 Brownfox mode ON (${self.trading_config.brownfox_trade_size_usd}/market, "
+                        f"sell +{self.trading_config.brownfox_sell_markup}, reconcile every "
+                        f"{self.trading_config.brownfox_reconcile_seconds}s)")
+
         # Start auto-sell maintainer (keep a resting sell at the standard price
         # covering our full position in each copied market)
-        if self.trading_config.auto_sell_enabled:
+        if self.trading_config.auto_sell_enabled and not self.trading_config.use_brownfox_mode:
             asyncio.create_task(self._auto_sell_maintain_loop())
             logger.info(f"🎯 Auto-sell limit on (resting sell @ ${self.trading_config.auto_sell_price} "
                         f"for full position, refreshed every {self.trading_config.auto_sell_maintain_seconds}s)")
@@ -298,6 +312,12 @@ class PolymarketCopyTradingBot:
         exceptions raised here do NOT propagate back to _on_new_trade.
         """
         try:
+            # Brownfox mode routes both buys and sells to its own state machine
+            # (one fixed-size buy per market, +1c resting sell, forced exit).
+            if self.trading_config.use_brownfox_mode and self.brownfox is not None:
+                await self.brownfox.on_event(trade)
+                return
+
             copy_trade = await self.trade_replicator.replicate_trade(trade)
 
             if copy_trade:
@@ -454,6 +474,20 @@ class PolymarketCopyTradingBot:
                 )
             except Exception as e:
                 logger.error(f"Error in stale-order sweep: {e}")
+                await asyncio.sleep(interval)
+
+    async def _brownfox_reconcile_loop(self):
+        """Periodically reconcile Brownfox positions: capture buy fills, keep the
+        +1c sell sized to holdings, cancel the buy once selling starts, and retry
+        any forced exit until flat."""
+        interval = max(1.0, float(self.trading_config.brownfox_reconcile_seconds))
+        while self.running:
+            try:
+                await asyncio.sleep(interval)
+                if self.brownfox is not None:
+                    await self.brownfox.reconcile_once()
+            except Exception as e:
+                logger.error(f"Error in brownfox reconcile loop: {e}")
                 await asyncio.sleep(interval)
 
     async def _auto_sell_maintain_loop(self):
