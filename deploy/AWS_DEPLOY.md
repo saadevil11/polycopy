@@ -98,6 +98,22 @@ be allowed, or use a NAT/residential proxy.
 
 ---
 
+## Updating to a new version
+
+If you deployed via **git clone** (Option A), one command on the box pulls,
+rebuilds, swaps the binary and restarts — and leaves the running bot untouched
+if the build fails:
+
+```bash
+cd ~/polybotshadow && ./deploy/update.sh
+```
+
+Persistent state in `/opt/polybotshadow/data` survives the restart, so a redeploy
+never double-buys or strands a position. (Docker users: rebuild the image and
+`docker run` the new one; the `/data` volume persists.)
+
+---
+
 ## Go-live checklist
 1. Region allows Polymarket trading (placed one test order — it filled).
 2. pUSD funded in `FUNDER_ADDRESS`; V2 exchange allowances set.
