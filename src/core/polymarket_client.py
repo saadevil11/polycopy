@@ -610,6 +610,14 @@ class PolymarketClient:
                 if "balance" in err or "allowance" in err:
                     # Our remaining estimate is too high - re-sync from chain.
                     remaining = self.get_token_holdings(token_id, use_cache=False)
+                    _time.sleep(0.5)
+                    continue
+                if "minimum" in err or "too small" in err or "min size" in err or remaining < 5.0:
+                    # Sub-minimum residual can't be sold on the exchange - stop
+                    # rather than burning every retry on the same rejection.
+                    logger.warning(f"🔻 Market-sell {token_id[:10]}: {remaining:.2f} sh below order minimum "
+                                   f"- cannot sell residual dust, stopping")
+                    break
                 _time.sleep(0.5)
                 continue
             _time.sleep(1.0)
@@ -620,11 +628,26 @@ class PolymarketClient:
                     matched = float(status.get('size_matched', 0) or 0)
                 except (TypeError, ValueError):
                     matched = 0.0
+            # ALWAYS cancel the (idempotent) order and CONFIRM it's gone before
+            # the next attempt - never leave a resting marketable remainder that
+            # a second order could double-sell. Re-read matched after cancel.
+            self.cancel_order(oid)
+            final = self.get_order_status(oid)
+            if final:
+                try:
+                    matched = max(matched, float(final.get('size_matched', 0) or 0))
+                except (TypeError, ValueError):
+                    pass
+            if self._find_open_order(oid, token_id) is not None:
+                # Couldn't confirm it's gone -> don't stack another sell; re-sync
+                # from chain next loop instead of trusting our local count.
+                self.cancel_order(oid)
+                sold_total += matched
+                remaining = self.get_token_holdings(token_id, use_cache=False)
+                logger.warning(f"🔻 Market-sell {token_id[:10]}: cancel unconfirmed, re-synced to {remaining:.2f}")
+                continue
             sold_total += matched
             remaining = max(0.0, remaining - matched)
-            # Cancel any unfilled remainder of this order before re-pricing lower.
-            if self._find_open_order(oid, token_id) is not None:
-                self.cancel_order(oid)
             logger.info(f"🔻 Market-sell {token_id[:10]}: attempt {attempt+1}, sold {matched:.2f} "
                         f"@ ~${sweep_price:.4f}, ~{remaining:.2f} left")
 

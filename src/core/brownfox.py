@@ -4,24 +4,28 @@ Brownfox mode.
 A distinct trading style for a specific target:
 
 - ONE fixed-USD buy per market (conditionId). We copy only the target's FIRST
-  buy in a market and ignore all their scale-ins. Guard persists across restarts.
+  buy in a market and ignore all their scale-ins. The guard is persisted BEFORE
+  the order is placed, so a crash can never lose it (no restart double-buy).
 - We buy at the target's EXACT price (no slippage), for a constant USD size
-  (e.g. $50), and the buy REST until it fills.
-- As the buy fills (possibly in pieces), we keep a resting SELL covering all
-  shares filled so far, priced at buy + markup (default +1 cent).
-- The moment our sell fills any shares, we cancel the rest of the unfilled buy.
-- If the target exits the market BEFORE our buy fills at all, we cancel the buy.
-- If the target sells BELOW our +1c sell, we cancel our sell and the buy and
-  MARKET-SELL all our shares (guaranteed, retried). If they sell at/above +1c,
-  our resting sell handles the exit.
+  (e.g. $50). The buy RESTS until filled.
+- We keep resting SELL orders at buy + markup (+1 cent) that, in total, cover all
+  the shares our buy has acquired - sized off the buy order's matched amount
+  (monotonic, never rotates) and hard-capped by fresh on-chain holdings, so we
+  can never place sells for more than we hold.
+- Once selling starts (price reaches our +1c, or our holdings drop), we cancel
+  the rest of the unfilled buy (only when the cancel is CONFIRMED).
+- If the target exits the market BEFORE our buy fills at all, we cancel the buy
+  (re-checking holdings after the cancel in case it filled during the race).
+- If the target sells BELOW our +1c, we cancel our sells + buy and MARKET-SELL
+  everything we hold (guaranteed, retried, never over-selling). At/above +1c, the
+  resting sell handles the exit.
 
-Careful fill confirmation and no-duplicate guarantees mirror the weather mode:
-a replacement/forced action only proceeds on confirmed state, and a per-market
-lock serialises everything for one market.
+State is rebuilt on restart from the persisted row + live exchange state (open
+orders + holdings), so an in-flight position resumes rather than orphaning.
 """
 import asyncio
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Tuple
 from loguru import logger
 
 from src.core.models import TraderTrade, TradeSide
@@ -33,35 +37,72 @@ class BrownfoxPos:
     token_id: str
     buy_price: float
     sell_price: float
+    status: str = "ACTIVE"              # ACTIVE, EXITING, DONE, ABORTED, STUCK
     buy_order_id: Optional[str] = None
-    sell_order_id: Optional[str] = None
-    bought_shares: float = 0.0     # cumulative filled on our buy
-    sold_shares: float = 0.0       # cumulative filled on our sell(s)
-    sell_size: float = 0.0         # shares currently covered by the resting sell
-    buy_cancelled: bool = False
-    status: str = "BUYING"         # BUYING, HOLDING, EXITING, DONE, ABORTED
+    buy_done: bool = False              # buy filled or confirmed-cancelled
+    bought: float = 0.0                 # shares acquired (buy matched, monotonic)
+    placed_sell_total: float = 0.0      # cumulative shares we've put up for sale
+    peak_holdings: float = 0.0
+    exit_attempts: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class BrownfoxManager:
     EPS = 0.01
+    MIN_SHARES = 5.0
 
     def __init__(self, client, database, config):
         self.client = client
         self.db = database
         self.config = config
         self.positions: Dict[str, BrownfoxPos] = {}
-        self.entered: Set[str] = set()
+        self.entered: set = set()
         self._entered_lock = asyncio.Lock()
 
+    # ---- startup -----------------------------------------------------------
+
     def load(self):
-        """Load the persisted one-buy-per-market guard."""
+        """Restore the one-buy guard AND rebuild in-flight positions so the
+        reconcile loop can resume them (re-discovering live orders/holdings)."""
         try:
             self.entered = self.db.get_brownfox_markets()
-            logger.info(f"🦊 Brownfox: loaded {len(self.entered)} already-entered markets")
         except Exception as e:
             logger.warning(f"Brownfox: could not load entered markets: {e}")
             self.entered = set()
+        try:
+            for row in self.db.get_active_brownfox_positions():
+                m = row.get('market_id')
+                if not m:
+                    continue
+                pos = BrownfoxPos(
+                    market_id=m, token_id=row.get('token_id') or '',
+                    buy_price=float(row.get('buy_price') or 0),
+                    sell_price=float(row.get('sell_price') or 0),
+                    status=row.get('status') or 'ACTIVE',
+                )
+                self._rehydrate(pos)
+                self.positions[m] = pos
+            logger.info(f"🦊 Brownfox: loaded {len(self.entered)} entered markets, "
+                        f"resumed {len(self.positions)} active positions")
+        except Exception as e:
+            logger.warning(f"Brownfox: could not rebuild positions: {e}")
+
+    def _rehydrate(self, pos: BrownfoxPos):
+        """Re-discover a position's live state from the exchange on restart."""
+        try:
+            buy_oid, buy_matched = self._find_order(pos.token_id, TradeSide.BUY, pos.buy_price)
+            resting_sells = self._resting_sell_size(pos.token_id, pos.sell_price)
+            holdings = self._holdings(pos.token_id)
+            if buy_oid:
+                pos.buy_order_id = buy_oid
+                pos.bought = max(buy_matched, holdings + resting_sells)
+            else:
+                pos.buy_done = True
+                pos.bought = holdings + resting_sells  # everything we still have / have up for sale
+            pos.placed_sell_total = resting_sells
+            pos.peak_holdings = holdings + resting_sells
+        except Exception as e:
+            logger.debug(f"Brownfox rehydrate error for {pos.market_id[:10]}: {e}")
 
     # ---- event entry point -------------------------------------------------
 
@@ -77,13 +118,9 @@ class BrownfoxManager:
     # ---- buy ---------------------------------------------------------------
 
     async def on_target_buy(self, trade: TraderTrade):
-        market = trade.market_id
-        token = trade.token_id
+        market, token = trade.market_id, trade.token_id
         if not market or not token:
             return
-
-        # One buy per market - reserve atomically so concurrent buys can't
-        # double-enter. Persisted so a restart won't re-buy.
         async with self._entered_lock:
             if market in self.entered or market in self.positions:
                 logger.info(f"🦊 Brownfox: already took our one buy in market {market[:10]} - ignoring")
@@ -99,56 +136,72 @@ class BrownfoxManager:
         sell_price = round(min(self.client._round_to_tick(buy_price + self.config.brownfox_sell_markup, tick),
                                round(1.0 - tick, 10)), 10)
         size = round(self.config.brownfox_trade_size_usd / buy_price, 2)
-        if size < 5.0:
-            size = 5.0
+        if size < self.MIN_SHARES:
+            size = self.MIN_SHARES
 
-        logger.info(f"🦊 Brownfox: target bought market {market[:10]} @ ${trade.price:.4f} -> "
-                    f"placing ${self.config.brownfox_trade_size_usd} buy = {size:.2f} sh @ exact ${buy_price:.4f}")
+        # Persist the reservation + state BEFORE placing the order, so a crash
+        # between place and persist can never lose the guard (no double-buy).
+        self.db.record_brownfox_market(market, token, buy_price, sell_price)
+        pos = BrownfoxPos(market_id=market, token_id=token, buy_price=buy_price, sell_price=sell_price)
+        self.positions[market] = pos
+
+        logger.info(f"🦊 Brownfox: target bought {market[:10]} @ ${trade.price:.4f} -> "
+                    f"${self.config.brownfox_trade_size_usd} buy = {size:.2f} sh @ exact ${buy_price:.4f} "
+                    f"(sell @ ${sell_price:.4f})")
         order_id = self.client.place_limit_order(token, TradeSide.BUY, size, buy_price)
-        if not order_id:
-            logger.error("🦊 Brownfox: buy placement failed - releasing market reservation")
-            async with self._entered_lock:
-                self.entered.discard(market)
+        if order_id:
+            pos.buy_order_id = order_id
+            logger.success(f"🦊 Brownfox: buy resting {order_id} @ ${buy_price:.4f}")
             return
 
-        self.db.record_brownfox_market(market, token, buy_price)
-        self.positions[market] = BrownfoxPos(
-            market_id=market, token_id=token, buy_price=buy_price,
-            sell_price=sell_price, buy_order_id=order_id, status="BUYING",
-        )
-        logger.success(f"🦊 Brownfox: buy resting {order_id} @ ${buy_price:.4f}; will sell at +"
-                       f"{self.config.brownfox_sell_markup} = ${sell_price:.4f}")
+        # Placement returned None: it may be a true rejection OR a lost response
+        # with the order actually live. Look for our resting buy before giving up.
+        found_oid, _ = self._find_order(token, TradeSide.BUY, buy_price)
+        if found_oid:
+            pos.buy_order_id = found_oid
+            logger.warning(f"🦊 Brownfox: placement returned None but found resting buy {found_oid} - adopting")
+            return
+        logger.error("🦊 Brownfox: buy placement failed and no resting order found - marking aborted")
+        pos.status = "ABORTED"
+        self.db.update_brownfox_status(market, "ABORTED")
 
-    # ---- sell (target's) ---------------------------------------------------
+    # ---- target sell -------------------------------------------------------
 
     async def on_target_sell(self, trade: TraderTrade):
         pos = self.positions.get(trade.market_id)
         if not pos:
             return
         async with pos.lock:
-            if pos.status in ("DONE", "ABORTED", "EXITING"):
+            if pos.status in ("DONE", "ABORTED", "STUCK", "EXITING"):
                 return
-            await self._refresh_fills(pos)
+            token = pos.token_id
+            self._refresh_bought(pos)
+            holdings = self._holdings(token)
 
-            if pos.bought_shares < self.EPS:
-                # Target exited before our buy filled at all -> cancel the buy.
-                logger.info(f"🦊 Brownfox: target exited market {pos.market_id[:10]} before our buy "
-                            f"filled - cancelling buy {pos.buy_order_id}")
-                self._confirm_cancel(pos.buy_order_id, pos.token_id)
-                pos.buy_cancelled = True
-                pos.status = "ABORTED"
-                return
-
-            if trade.price < pos.sell_price - 1e-9:
-                logger.info(f"🦊 Brownfox: target sold @ ${trade.price:.4f} BELOW our +mark sell "
-                            f"${pos.sell_price:.4f} - forcing market exit")
-                pos.status = "EXITING"
-                await self._forced_exit(pos)
-            else:
+            if trade.price >= pos.sell_price - 1e-9:
+                # Target sold at/above our +1c -> the resting sell handles it.
                 logger.info(f"🦊 Brownfox: target sold @ ${trade.price:.4f} >= our sell ${pos.sell_price:.4f} "
-                            f"- resting +mark sell handles the exit")
+                            f"- resting sell handles it")
+                return
 
-    # ---- reconcile (periodic) ---------------------------------------------
+            # Target sold BELOW our +1c.
+            if holdings < self.EPS and pos.bought < self.EPS:
+                # Nothing acquired yet -> cancel the resting buy (target exited
+                # before our fill). Re-check holdings after, in case it filled
+                # during the cancel race.
+                if self._confirm_cancel(pos.buy_order_id, token):
+                    pos.buy_done = True
+                    if self._holdings(token) < self.EPS:
+                        self._set_status(pos, "ABORTED")
+                        logger.info(f"🦊 Brownfox: target exited before our buy filled - cancelled buy")
+                        return
+                # else: couldn't confirm cancel, or shares appeared -> force exit
+            logger.info(f"🦊 Brownfox: target sold @ ${trade.price:.4f} BELOW our +mark "
+                        f"${pos.sell_price:.4f} - forcing market exit")
+            self._set_status(pos, "EXITING")
+            await self._forced_exit(pos)
+
+    # ---- reconcile ---------------------------------------------------------
 
     async def reconcile_once(self):
         for market in list(self.positions.keys()):
@@ -156,48 +209,109 @@ class BrownfoxManager:
             if not pos:
                 continue
             async with pos.lock:
-                if pos.status in ("DONE", "ABORTED"):
+                if pos.status in ("DONE", "ABORTED", "STUCK"):
                     continue
                 try:
-                    await self._refresh_fills(pos)
-
                     if pos.status == "EXITING":
                         await self._forced_exit(pos)
                         continue
-
-                    held = round(pos.bought_shares - pos.sold_shares, 6)
-
-                    # Once our sell has taken ANY shares, cancel the rest of the
-                    # unfilled buy (price has risen; no more accumulating).
-                    if pos.sold_shares > self.EPS and not pos.buy_cancelled:
-                        self._confirm_cancel(pos.buy_order_id, pos.token_id)
-                        pos.buy_cancelled = True
-                        logger.info(f"🦊 Brownfox: sell started filling - cancelled remaining buy "
-                                    f"for {pos.market_id[:10]}")
-
-                    # Keep the resting sell sized to cover all shares we hold.
-                    if held >= 5.0 and abs(held - pos.sell_size) >= 1.0:
-                        await self._ensure_sell(pos, held)
-
-                    # Fully exited?
-                    if pos.buy_cancelled and held < self.EPS:
-                        pos.status = "DONE"
-                        logger.success(f"🦊 Brownfox: market {pos.market_id[:10]} fully closed")
+                    await self._manage(pos)
                 except Exception as e:
                     logger.error(f"🦊 Brownfox reconcile error for {market[:10]}: {e}")
 
+    async def _manage(self, pos: BrownfoxPos):
+        token = pos.token_id
+        holdings = self._holdings(token)
+        pos.peak_holdings = max(pos.peak_holdings, holdings)
+        self._refresh_bought(pos)
+
+        # Is the buy still resting?
+        if pos.buy_order_id and not pos.buy_done:
+            if self.client._find_open_order(pos.buy_order_id, token) is None:
+                pos.buy_done = True  # filled or already gone
+
+        # Cancel the rest of the buy once selling has started (price reached our
+        # sell level, or our holdings have dropped from their peak). Only mark it
+        # done when the cancel is CONFIRMED.
+        if pos.buy_order_id and not pos.buy_done:
+            bid = self.client._get_best_price(token, TradeSide.SELL)
+            selling_started = (pos.peak_holdings - holdings > self.EPS) or \
+                              (bid is not None and bid >= pos.sell_price - 1e-9)
+            if selling_started:
+                if self._confirm_cancel(pos.buy_order_id, token):
+                    pos.buy_done = True
+                    logger.info(f"🦊 Brownfox: selling started - cancelled remaining buy for {pos.market_id[:10]}")
+
+        # Ensure resting sells cover all ACQUIRED shares. Drive the target off
+        # the buy's matched amount (accurate, never rotates) but HARD-CAP every
+        # placement by fresh uncovered holdings, so we can never over-sell.
+        resting = self._resting_sell_size(token, pos.sell_price)
+        need = round(pos.bought - pos.placed_sell_total, 4)
+        uncovered = round(holdings - resting, 4)
+        place_size = round(min(need, uncovered), 2)
+        if place_size >= self.MIN_SHARES:
+            oid = self.client.place_limit_order(token, TradeSide.SELL, place_size, pos.sell_price)
+            if oid:
+                pos.placed_sell_total += place_size
+                logger.info(f"🦊 Brownfox: resting sell {place_size:.2f} sh @ ${pos.sell_price:.4f} "
+                            f"for {pos.market_id[:10]} (bought {pos.bought:.2f}, held {holdings:.2f})")
+
+        # Done when the buy is finished and we hold ~nothing with no resting sell.
+        if pos.buy_done and holdings < self.EPS and resting < self.EPS:
+            self._set_status(pos, "DONE")
+            logger.success(f"🦊 Brownfox: market {pos.market_id[:10]} fully closed")
+        elif pos.buy_done and holdings < self.MIN_SHARES and resting < self.EPS and pos.bought > self.EPS:
+            # Sub-5 residual dust that can't be sold -> close out (don't spin).
+            self._set_status(pos, "DONE")
+            logger.info(f"🦊 Brownfox: {holdings:.2f} sh residual dust in {pos.market_id[:10]} - closing")
+
+    # ---- forced exit -------------------------------------------------------
+
+    async def _forced_exit(self, pos: BrownfoxPos):
+        token = pos.token_id
+        pos.exit_attempts += 1
+
+        # Cancel every resting sell, then the buy (confirmed; retry if not).
+        self._cancel_all_sells(pos)
+        if not pos.buy_done:
+            if self._confirm_cancel(pos.buy_order_id, token):
+                pos.buy_done = True
+
+        holdings = self._holdings(token)
+        if holdings < self.EPS:
+            self._set_status(pos, "DONE")
+            return
+        if holdings < self.MIN_SHARES:
+            logger.warning(f"🦊 Brownfox: {holdings:.2f} sh dust in {pos.market_id[:10]} - unsellable, closing")
+            self._set_status(pos, "DONE")
+            return
+
+        sold, left = await asyncio.to_thread(
+            self.client.market_sell_all, token, holdings, self.config.brownfox_market_sell_retries
+        )
+        if left < self.MIN_SHARES:
+            self._set_status(pos, "DONE")
+            logger.success(f"🦊 Brownfox: forced exit complete for {pos.market_id[:10]} ({sold:.2f} sold)")
+        elif pos.exit_attempts >= 12:
+            self._set_status(pos, "STUCK")
+            logger.critical(f"⛔ Brownfox: could NOT exit {left:.2f} sh in {pos.market_id[:10]} after "
+                            f"{pos.exit_attempts} attempts - manual action needed")
+        else:
+            logger.warning(f"🦊 Brownfox: forced exit left {left:.2f} sh in {pos.market_id[:10]} - will retry")
+
     # ---- helpers -----------------------------------------------------------
 
-    async def _refresh_fills(self, pos: BrownfoxPos):
-        """Update bought/sold shares from order status (best-effort)."""
+    def _holdings(self, token: str) -> float:
+        try:
+            return float(self.client.get_token_holdings(token, use_cache=False) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _refresh_bought(self, pos: BrownfoxPos):
         if pos.buy_order_id:
             m = self._matched(pos.buy_order_id)
-            if m is not None and m > pos.bought_shares:
-                pos.bought_shares = m
-        if pos.sell_order_id:
-            m = self._matched(pos.sell_order_id)
-            if m is not None and m > pos.sold_shares:
-                pos.sold_shares = m
+            if m is not None and m > pos.bought:
+                pos.bought = m
 
     def _matched(self, order_id: str) -> Optional[float]:
         try:
@@ -208,64 +322,71 @@ class BrownfoxManager:
         except Exception:
             return None
 
-    async def _ensure_sell(self, pos: BrownfoxPos, held: float):
-        """Make sure a resting sell at +mark covers `held` shares (cancel and
-        re-place if the covered size is stale)."""
-        # Cancel the existing sell first (confirmed) so we never have two sells.
-        if pos.sell_order_id:
-            if not self._confirm_cancel(pos.sell_order_id, pos.token_id):
-                logger.warning("🦊 Brownfox: could not confirm sell cancel - not re-placing (no dup)")
-                return
-            # capture any fills that happened on it before cancel
-            m = self._matched(pos.sell_order_id)
-            if m is not None and m > pos.sold_shares:
-                pos.sold_shares = m
-            pos.sell_order_id = None
-            pos.sell_size = 0.0
-            held = round(pos.bought_shares - pos.sold_shares, 6)
-            if held < 5.0:
-                return
-        oid = self.client.place_limit_order(pos.token_id, TradeSide.SELL, held, pos.sell_price)
-        if oid:
-            pos.sell_order_id = oid
-            pos.sell_size = held
-            logger.info(f"🦊 Brownfox: resting sell {held:.2f} sh @ ${pos.sell_price:.4f} for {pos.market_id[:10]}")
+    def _find_order(self, token: str, side: TradeSide, price: float) -> Tuple[Optional[str], float]:
+        """Return (order_id, matched) of a resting order for this token at price."""
+        try:
+            for o in self.client.get_open_orders(token_id=token):
+                if str(o.get('side', '')).upper() != side.value:
+                    continue
+                try:
+                    op = float(o.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    op = 0.0
+                if abs(op - price) > 1e-9:
+                    continue
+                oid = o.get('id') or o.get('orderID') or o.get('order_id')
+                try:
+                    matched = float(o.get('size_matched', 0) or 0)
+                except (TypeError, ValueError):
+                    matched = 0.0
+                return (oid, matched)
+        except Exception as e:
+            logger.debug(f"Brownfox _find_order error: {e}")
+        return (None, 0.0)
 
-    async def _forced_exit(self, pos: BrownfoxPos):
-        """Cancel our sell + remaining buy and market-sell everything we hold."""
-        # Cancel resting sell (capture any fills first).
-        if pos.sell_order_id:
-            m = self._matched(pos.sell_order_id)
-            if m is not None and m > pos.sold_shares:
-                pos.sold_shares = m
-            self._confirm_cancel(pos.sell_order_id, pos.token_id)
-            pos.sell_order_id = None
-            pos.sell_size = 0.0
-        # Cancel remaining buy.
-        if not pos.buy_cancelled:
-            self._confirm_cancel(pos.buy_order_id, pos.token_id)
-            pos.buy_cancelled = True
+    def _resting_sell_size(self, token: str, price: float) -> float:
+        """Total unfilled SELL size resting for this token at price."""
+        total = 0.0
+        try:
+            for o in self.client.get_open_orders(token_id=token):
+                if str(o.get('side', '')).upper() != 'SELL':
+                    continue
+                try:
+                    op = float(o.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    op = 0.0
+                if abs(op - price) > 1e-9:
+                    continue
+                try:
+                    orig = float(o.get('original_size', o.get('size', 0)) or 0)
+                    matched = float(o.get('size_matched', 0) or 0)
+                except (TypeError, ValueError):
+                    orig, matched = 0.0, 0.0
+                total += max(orig - matched, 0.0)
+        except Exception as e:
+            logger.debug(f"Brownfox _resting_sell_size error: {e}")
+        return total
 
-        held = round(pos.bought_shares - pos.sold_shares, 6)
-        if held < self.EPS:
-            pos.status = "DONE"
-            return
-
-        sold, left = await asyncio.to_thread(
-            self.client.market_sell_all, pos.token_id, held,
-            self.config.brownfox_market_sell_retries,
-        )
-        pos.sold_shares += sold
-        if left < self.EPS:
-            pos.status = "DONE"
-            logger.success(f"🦊 Brownfox: forced exit complete for {pos.market_id[:10]}")
-        else:
-            # Leave EXITING; the reconcile loop will retry until flat.
-            logger.warning(f"🦊 Brownfox: forced exit left {left:.2f} sh in {pos.market_id[:10]} - will retry")
+    def _cancel_all_sells(self, pos: BrownfoxPos):
+        try:
+            for o in self.client.get_open_orders(token_id=pos.token_id):
+                if str(o.get('side', '')).upper() != 'SELL':
+                    continue
+                try:
+                    op = float(o.get('price', 0) or 0)
+                except (TypeError, ValueError):
+                    op = 0.0
+                if abs(op - pos.sell_price) > 1e-9:
+                    continue
+                oid = o.get('id') or o.get('orderID') or o.get('order_id')
+                if oid:
+                    self.client.cancel_order(oid)
+        except Exception as e:
+            logger.debug(f"Brownfox _cancel_all_sells error: {e}")
 
     def _confirm_cancel(self, order_id: Optional[str], token_id: str) -> bool:
-        """Cancel an order and confirm it's gone from the book. Returns True if
-        the order is confirmed not resting (cancelled or already gone)."""
+        """Cancel and CONFIRM the order is gone. Returns True only when confirmed
+        not resting (so the caller never assumes a cancel that didn't happen)."""
         if not order_id:
             return True
         try:
@@ -279,3 +400,10 @@ class BrownfoxManager:
         except Exception as e:
             logger.debug(f"Brownfox confirm-cancel error for {order_id}: {e}")
             return False
+
+    def _set_status(self, pos: BrownfoxPos, status: str):
+        pos.status = status
+        try:
+            self.db.update_brownfox_status(pos.market_id, status)
+        except Exception as e:
+            logger.debug(f"Brownfox status persist error: {e}")

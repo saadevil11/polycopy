@@ -72,16 +72,25 @@ class Database:
                     )
                 ''')
 
-                # Brownfox: markets we've already taken our one buy in (the
-                # one-buy-per-market guard must persist across restarts).
+                # Brownfox: one-buy-per-market guard + position state, persisted
+                # so the manager can resume mid-flight after a restart.
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS brownfox_markets (
                         market_id TEXT PRIMARY KEY,
                         token_id TEXT,
                         buy_price REAL,
+                        sell_price REAL,
+                        status TEXT DEFAULT 'ACTIVE',
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
+                # Migrate older tables that lack the newer columns.
+                for col, ddl in (("sell_price", "ALTER TABLE brownfox_markets ADD COLUMN sell_price REAL"),
+                                 ("status", "ALTER TABLE brownfox_markets ADD COLUMN status TEXT DEFAULT 'ACTIVE'")):
+                    try:
+                        cursor.execute(ddl)
+                    except Exception:
+                        pass  # column already exists
                 
                 # Create indexes
                 cursor.execute('CREATE INDEX IF NOT EXISTS idx_target_trades_timestamp ON target_trades(timestamp)')
@@ -95,20 +104,31 @@ class Database:
             logger.error(f"Failed to initialize database: {e}")
             raise
     
-    def record_brownfox_market(self, market_id: str, token_id: str, buy_price: float) -> None:
-        """Persist that we've taken our one brownfox buy in this market."""
+    def record_brownfox_market(self, market_id: str, token_id: str,
+                               buy_price: float, sell_price: float) -> None:
+        """Reserve a market (one-buy guard) and persist its state. Called BEFORE
+        the buy is placed so a crash can never lose the guard / double-buy."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    'INSERT OR IGNORE INTO brownfox_markets (market_id, token_id, buy_price) VALUES (?, ?, ?)',
-                    (market_id, token_id, buy_price)
+                    "INSERT OR IGNORE INTO brownfox_markets (market_id, token_id, buy_price, sell_price, status) "
+                    "VALUES (?, ?, ?, ?, 'ACTIVE')",
+                    (market_id, token_id, buy_price, sell_price)
                 )
                 conn.commit()
         except Exception as e:
             logger.error(f"Failed to record brownfox market {market_id}: {e}")
 
+    def update_brownfox_status(self, market_id: str, status: str) -> None:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('UPDATE brownfox_markets SET status = ? WHERE market_id = ?', (status, market_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to update brownfox status {market_id}: {e}")
+
     def get_brownfox_markets(self) -> set:
-        """Set of market_ids we've already taken our one brownfox buy in."""
+        """Set of market_ids we've ever entered (the persistent one-buy guard)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -117,6 +137,21 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to load brownfox markets: {e}")
             return set()
+
+    def get_active_brownfox_positions(self) -> list:
+        """Rows for markets not yet closed (ACTIVE/EXITING), for restart resume."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT market_id, token_id, buy_price, sell_price, status FROM brownfox_markets "
+                    "WHERE status NOT IN ('DONE', 'ABORTED')"
+                )
+                cols = [d[0] for d in cursor.description]
+                return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to load active brownfox positions: {e}")
+            return []
 
     def has_executed_trade(self, trade_id: str) -> bool:
         """Check if a trade has already been attempted (executed, failed, or skipped)"""
