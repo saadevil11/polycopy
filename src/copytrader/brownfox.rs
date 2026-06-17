@@ -34,6 +34,10 @@ struct Pos {
     bought: f64,
     peak_holdings: f64,
     exit_attempts: u32,
+    /// Latched true once we've positively seen the target hold this token (via
+    /// the Data API). Until then, an absence is treated as positions-API lag —
+    /// NOT an exit — so the lag window right after entry can't false-abort us.
+    target_confirmed_held: bool,
 }
 
 #[derive(Default)]
@@ -93,6 +97,7 @@ impl Brownfox {
                 bought: 0.0,
                 peak_holdings: 0.0,
                 exit_attempts: 0,
+                target_confirmed_held: false,
             };
             // Re-discover live state from the exchange.
             let (buy_oid, buy_matched) = self.find_order(&pos.token_id, "BUY", pos.buy_price).await;
@@ -106,6 +111,10 @@ impl Brownfox {
                 pos.bought = holdings + resting;
             }
             pos.peak_holdings = holdings; // owned only; resting sells aren't a drop
+            // We already hold/filled here, so we've demonstrably been in this
+            // market — seed the confirmed-held latch so a resumed position can
+            // exit on a real target departure without re-confirming first.
+            pos.target_confirmed_held = pos.bought > EPS || holdings > EPS || resting > EPS;
             st.positions.insert(market, pos);
         }
         info!("🦊 brownfox: loaded {} entered, resumed {} positions", st.entered.len(), st.positions.len());
@@ -171,6 +180,7 @@ impl Brownfox {
             bought: 0.0,
             peak_holdings: 0.0,
             exit_attempts: 0,
+            target_confirmed_held: false,
         };
         info!("🦊 brownfox: target bought {} @ {:.4} -> buy {} sh @ {:.4} (sell @ {:.4})", short(&market), t.price, size, buy_price, sell_price);
         match self.exec.place_gtc(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
@@ -270,8 +280,14 @@ impl Brownfox {
             pos.buy_done = true;
         }
 
-        // Target-exit detection (independent of the sell event).
-        if !self.target_holds(st, &token).await {
+        // Target-exit detection — a BACKSTOP for a missed/dropped WS sell event,
+        // NOT the primary exit (on_sell is). We must FIRST positively confirm the
+        // target held this token; otherwise the Data-API /positions lag right
+        // after entry would false-trigger an exit before our buy even fills.
+        let held = self.target_holds(st, &token).await;
+        if held {
+            pos.target_confirmed_held = true; // latch: positively observed the hold
+        } else if pos.target_confirmed_held {
             if !pos.buy_done && self.exec.cancel_confirmed(pos.buy_order_id.as_deref().unwrap_or(""), &token).await {
                 pos.buy_done = true;
             }
@@ -297,6 +313,9 @@ impl Brownfox {
                 // else market at/above +mark -> let the resting sell ride
             }
         }
+        // (!held && !target_confirmed_held = the post-entry positions-lag window:
+        //  do nothing here; the buy rests and the resting-sell logic below still
+        //  runs. on_sell remains the instant exit if the target really sells.)
 
         // Cancel the rest of the buy once selling has started.
         if pos.buy_order_id.is_some() && !pos.buy_done {
