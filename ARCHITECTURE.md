@@ -43,7 +43,10 @@ Two strategies, selected by env:
   **skips** the market if that 5m candle has touched any level since the window opened
   (price at liquidity = reversal risk; one touch disqualifies the market for its whole life).
   Also a **liquidity STOP**: if a market we already bought touches a level while still live,
-  we dump the shares with a GTC sell at `SCANNER_EXIT_PRICE` (0.10). Coins with no Binance
+  we dump the shares with a GTC sell at `SCANNER_EXIT_PRICE` (0.10). The live price (forming-
+  candle wick) streams from the **Binance kline WebSocket** in real time so a touch registers
+  instantly (the 0.99 check is a cached in-memory read — no fetch at decision time); the
+  slower **levels** refresh from REST every `SCANNER_LIQ_POLL_SECS`. Coins with no Binance
   USDT pair (HYPE) aren't traded while it's on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
@@ -191,9 +194,10 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `<asset>-updown-<dur>-*` markets; empty = all), `NINETYNINE_DURATIONS` (default
 `5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
 `SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
-(0.99), `SCANNER_DISCOVERY_SECS` (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/
-`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`); liquidity filter `SCANNER_LIQUIDITY_FILTER`,
-`SCANNER_LIQ_POLL_SECS`, `BINANCE_REST_URL`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+(0.99), `SCANNER_EXIT_PRICE` (0.10, liquidity-stop floor), `SCANNER_DISCOVERY_SECS`
+(reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
+liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels cadence),
+`BINANCE_REST_URL`, `BINANCE_WS_URL` (live price). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

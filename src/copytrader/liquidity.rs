@@ -11,15 +11,20 @@
 //! (price at a liquidity level = reversal risk). The 5m candle's range covers the
 //! whole window, so one touch disqualifies the market for its entire life.
 //!
-//! Data: Binance public klines REST (no auth), polled every `SCANNER_LIQ_POLL_SECS`.
-//! Coins with no Binance USDT pair (e.g. HYPE) have no data → `clear_to_trade` is
-//! false for them (we don't trade what we can't filter).
+//! Data: the live price (forming-candle high/low) streams from the **Binance combined
+//! kline WebSocket** (`BINANCE_WS_URL`, sub-second) so a touch is caught in real time;
+//! the slower-moving **levels** are recomputed from the klines **REST** every
+//! `SCANNER_LIQ_POLL_SECS` (which also self-heals any WS gap). Coins with no Binance
+//! USDT pair (e.g. HYPE) have no data → `clear_to_trade` is false (we don't trade what
+//! we can't filter).
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::time::interval;
+use tokio::time::{interval, sleep};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -40,6 +45,7 @@ struct Series {
 pub struct Liquidity {
     enabled: bool,
     rest_url: String,
+    ws_url: String,
     poll: Duration,
     /// coins we filter (those with a Binance USDT pair), e.g. ["btc","eth",...].
     coins: Vec<String>,
@@ -65,6 +71,7 @@ impl Liquidity {
         Liquidity {
             enabled: cfg.scanner_liquidity_filter,
             rest_url: cfg.binance_rest_url.clone(),
+            ws_url: cfg.binance_ws_url.clone(),
             poll: cfg.scanner_liq_poll,
             coins,
             http,
@@ -72,15 +79,16 @@ impl Liquidity {
         }
     }
 
-    /// Poll Binance klines for every (coin, timeframe) and recompute levels + the
-    /// live price. Runs until cancelled.
+    /// Keep the filter's view of every (coin, timeframe) fresh: the live forming-candle
+    /// price via the Binance kline WebSocket (sub-second), the levels via a slower REST
+    /// refresh (which also seeds the closed-bar history and self-heals WS gaps).
     pub async fn run(self: Arc<Self>) {
         if !self.enabled {
             info!("🪙 liquidity filter: OFF (SCANNER_LIQUIDITY_FILTER=false)");
             return;
         }
         info!(
-            "🪙 liquidity filter: ON — skip a 0.99 buy if {}'s current 5m candle has touched ANY swing level pooled from {} (pivots {}L/{}R, wick) since the window opened; polling Binance every {}s",
+            "🪙 liquidity filter: ON — skip a 0.99 buy if {}'s current 5m candle has touched ANY swing level pooled from {} (pivots {}L/{}R, wick) since the window opened; live price via Binance WS, levels refreshed every {}s",
             self.coins.join("/"),
             TFS.join("/"),
             LEFT,
@@ -93,14 +101,108 @@ impl Liquidity {
             .filter_map(|c| binance_symbol(c).map(|s| (c.clone(), s)))
             .flat_map(|(c, s)| TFS.iter().map(move |tf| (c.clone(), *tf, s)))
             .collect();
-
-        let mut t = interval(self.poll);
-        loop {
-            for (coin, tf, sym) in &work {
-                self.refresh(coin, tf, sym).await;
-            }
-            t.tick().await;
+        if work.is_empty() {
+            warn!("🪙 liquidity filter: no coins with a Binance pair — nothing to track");
+            return;
         }
+
+        // Seed levels + price once via REST so the filter has data before the WS warms up.
+        for (coin, tf, sym) in &work {
+            self.refresh(coin, tf, sym).await;
+        }
+
+        // REST levels refresh loop (slow; the WS owns the fast live price).
+        {
+            let me = self.clone();
+            let work = work.clone();
+            tokio::spawn(async move {
+                let mut t = interval(me.poll);
+                t.tick().await; // first tick is immediate; we already seeded above
+                loop {
+                    t.tick().await;
+                    for (coin, tf, sym) in &work {
+                        me.refresh(coin, tf, sym).await;
+                    }
+                }
+            });
+        }
+
+        // Live forming-candle price via the Binance kline WebSocket (reconnect forever).
+        self.ws_loop().await;
+    }
+
+    /// Connect the Binance combined kline stream and feed live forming-candle highs/lows
+    /// into `series`. Reconnects with backoff; runs until the process exits.
+    async fn ws_loop(&self) {
+        let streams: Vec<String> = self
+            .coins
+            .iter()
+            .filter_map(|c| binance_symbol(c))
+            .flat_map(|s| TFS.iter().map(move |tf| format!("{}@kline_{}", s.to_lowercase(), tf)))
+            .collect();
+        if streams.is_empty() {
+            return;
+        }
+        let url = format!("{}?streams={}", self.ws_url, streams.join("/"));
+        let mut backoff = 2u64;
+        loop {
+            match self.ws_session(&url, streams.len()).await {
+                Ok(()) => backoff = 2,
+                Err(e) => {
+                    warn!("🪙 liquidity: Binance kline WS ended ({e}); reconnecting in {backoff}s");
+                    sleep(Duration::from_secs(backoff)).await;
+                    backoff = (backoff * 2).min(30);
+                }
+            }
+        }
+    }
+
+    async fn ws_session(&self, url: &str, n: usize) -> anyhow::Result<()> {
+        let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+        let (mut write, mut read) = ws.split();
+        info!("🪙 liquidity: Binance kline WS connected ({n} streams, live price)");
+        while let Some(msg) = read.next().await {
+            match msg? {
+                Message::Text(t) => self.handle_kline(&t),
+                Message::Ping(p) => {
+                    let _ = write.send(Message::Pong(p)).await;
+                }
+                Message::Close(_) => return Ok(()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// One kline frame → update that (coin, tf)'s forming-candle running high/low. We use
+    /// the live high/low (wick) every tick, so a touch registers the instant it happens.
+    /// Levels (highs/lows) are owned by the REST refresh; we never touch them here.
+    fn handle_kline(&self, text: &str) {
+        let v: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        // Combined-stream frames wrap the event in {"stream":..,"data":{..}}.
+        let data = v.get("data").unwrap_or(&v);
+        let k = match data.get("k") {
+            Some(k) => k,
+            None => return,
+        };
+        let sym = data.get("s").and_then(|x| x.as_str()).unwrap_or("");
+        let interval = k.get("i").and_then(|x| x.as_str()).unwrap_or("");
+        let hi = k.get("h").and_then(num_f64).unwrap_or(0.0);
+        let lo = k.get("l").and_then(num_f64).unwrap_or(0.0);
+        if sym.is_empty() || interval.is_empty() || hi <= 0.0 || lo <= 0.0 {
+            return;
+        }
+        let coin = match sym.strip_suffix("USDT") {
+            Some(c) => c.to_lowercase(),
+            None => return,
+        };
+        let mut map = self.series.lock().unwrap();
+        let s = map.entry(format!("{coin}:{interval}")).or_default();
+        s.cur_hi = hi;
+        s.cur_lo = lo;
     }
 
     async fn refresh(&self, coin: &str, tf: &str, sym: &str) {

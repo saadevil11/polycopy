@@ -68,8 +68,9 @@ pub struct Config {
     // touching a Binance 5m/15m/30m swing level. Coins with no Binance pair (HYPE)
     // are not traded while this is on.
     pub scanner_liquidity_filter: bool,
-    pub scanner_liq_poll: Duration,     // Binance kline poll cadence
+    pub scanner_liq_poll: Duration,     // Binance LEVELS refresh cadence (REST); the live price comes from the WS
     pub binance_rest_url: String,       // swappable if api.binance.com is geo-blocked
+    pub binance_ws_url: String,         // Binance combined kline stream (live forming-candle price)
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -215,8 +216,9 @@ impl Config {
             scanner_exit_price: env_f64("SCANNER_EXIT_PRICE", 0.10),
             scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
             scanner_liquidity_filter: env_bool("SCANNER_LIQUIDITY_FILTER", true),
-            scanner_liq_poll: Duration::from_secs(env_u64("SCANNER_LIQ_POLL_SECS", 5).max(2)),
+            scanner_liq_poll: Duration::from_secs(env_u64("SCANNER_LIQ_POLL_SECS", 15).max(2)),
             binance_rest_url: env_str("BINANCE_REST_URL", "https://api.binance.com"),
+            binance_ws_url: env_str("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream"),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
