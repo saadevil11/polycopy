@@ -15,6 +15,11 @@ pub struct Config {
     pub private_key: String,
     pub funder_address: String,
     pub signature_type: u8,
+    // Pre-created CLOB API credentials (optional; REQUIRED for sig type 3 deposit
+    // wallets, which can't be L1-derived). If all three are set they're used as-is.
+    pub clob_api_key: String,
+    pub clob_api_secret: String,
+    pub clob_api_passphrase: String,
 
     // safety gates
     pub dry_run: bool,
@@ -150,6 +155,9 @@ impl Config {
             private_key,
             funder_address,
             signature_type: env_u64("SIGNATURE_TYPE", 2) as u8,
+            clob_api_key: env_str("CLOB_API_KEY", ""),
+            clob_api_secret: env_str("CLOB_API_SECRET", ""),
+            clob_api_passphrase: env_str("CLOB_API_PASSPHRASE", ""),
             dry_run,
             live_signing_validated,
             data_source,

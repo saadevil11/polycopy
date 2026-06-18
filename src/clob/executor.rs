@@ -60,7 +60,22 @@ impl Executor {
             .timeout(Duration::from_secs(10))
             .user_agent("polybotshadow/0.1")
             .build()?;
-        let creds = auth::create_or_derive(cfg, &client, &wallet).await?;
+        let creds = match auth::provided_creds(cfg) {
+            Some(c) => {
+                tracing::info!("clob auth: using provided API credentials (CLOB_API_KEY)");
+                c
+            }
+            None => {
+                if cfg.signature_type == 3 {
+                    anyhow::bail!(
+                        "sig type 3 (deposit wallet) needs CLOB_API_KEY / CLOB_API_SECRET / \
+                         CLOB_API_PASSPHRASE in .env — the bot can't L1-derive a deposit-wallet \
+                         API key. Create an API key for the deposit wallet on Polymarket and set them."
+                    );
+                }
+                auth::create_or_derive(cfg, &client, &wallet).await?
+            }
+        };
 
         let funder_addr: Address = cfg
             .funder_address

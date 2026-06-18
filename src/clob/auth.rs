@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::Engine;
-use ethers_core::types::Address;
 use ethers_core::utils::to_checksum;
 use ethers_signers::{LocalWallet, Signer};
 use hmac::{Hmac, Mac};
@@ -23,6 +22,25 @@ pub struct ApiCreds {
     pub api_passphrase: String,
 }
 
+/// Pre-created API credentials from the env (CLOB_API_KEY / CLOB_API_SECRET /
+/// CLOB_API_PASSPHRASE). Returned only if all three are set. Required for deposit
+/// wallets (sig type 3), which can't be L1-derived here — create them for the
+/// deposit wallet on Polymarket. Also usable for any wallet to skip derivation.
+pub fn provided_creds(cfg: &Config) -> Option<ApiCreds> {
+    if !cfg.clob_api_key.is_empty()
+        && !cfg.clob_api_secret.is_empty()
+        && !cfg.clob_api_passphrase.is_empty()
+    {
+        Some(ApiCreds {
+            api_key: cfg.clob_api_key.clone(),
+            api_secret: cfg.clob_api_secret.clone(),
+            api_passphrase: cfg.clob_api_passphrase.clone(),
+        })
+    } else {
+        None
+    }
+}
+
 pub fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
@@ -37,25 +55,15 @@ pub async fn create_or_derive(
     client: &reqwest::Client,
     wallet: &LocalWallet,
 ) -> anyhow::Result<ApiCreds> {
+    // L1 derivation only works for an EOA-controlled key (types 0/1/2). Deposit
+    // wallets (sig type 3) can't be L1-derived here (would need an ERC-1271 ClobAuth
+    // signature); those MUST supply pre-created creds — see provided_creds() +
+    // Executor::new. POLY_ADDRESS + ClobAuth address = the signing EOA, checksummed.
     let ts = now_secs();
     let nonce = 0u64;
-    let eoa = wallet.address();
-    // For POLY_1271 deposit wallets (sig type 3), the API key must be bound to the
-    // DEPOSIT WALLET (== the order's signer), so POLY_ADDRESS and the ClobAuth
-    // `address` field are the funder; the digest is still ECDSA-signed by the
-    // controlling EOA (the deposit wallet's ERC-1271 validates it). Types 0/1/2
-    // use the EOA. Without this, the key binds to the EOA and the type-3 order is
-    // rejected: "the order signer address has to be the address of the API KEY".
-    let auth_addr: Address = if cfg.signature_type == 3 {
-        cfg.funder_address
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid FUNDER_ADDRESS for sig type 3: {e}"))?
-    } else {
-        eoa
-    };
-    let sig = signing::sign_clob_auth(wallet, auth_addr, ts, nonce, cfg.chain_id)?;
-    // EIP-55 checksummed, matching py-clob-client-v2 (eth_account returns it so).
-    let addr_hex = to_checksum(&auth_addr, None);
+    let addr = wallet.address();
+    let sig = signing::sign_clob_auth(wallet, addr, ts, nonce, cfg.chain_id)?;
+    let addr_hex = to_checksum(&addr, None);
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)
