@@ -43,6 +43,8 @@ pub struct Config {
     pub ninetynine_buy_max_age: Option<Duration>, // cancel an unfilled buy after this (None = never)
     /// Only copy `<asset>-updown-5m-*` markets for these assets (empty = no filter).
     pub ninetynine_assets: Vec<String>,
+    /// Max concurrent 99c buy placements (parallel across markets; bounds 429s).
+    pub ninetynine_max_concurrent_buys: usize,
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -166,6 +168,7 @@ impl Config {
                 s => Some(Duration::from_secs(s)),
             },
             ninetynine_assets: env_list("NINETYNINE_ASSETS", ""),
+            ninetynine_max_concurrent_buys: (env_u64("NINETYNINE_MAX_CONCURRENT_BUYS", 8) as usize).max(1),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),

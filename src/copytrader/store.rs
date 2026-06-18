@@ -150,13 +150,19 @@ impl Store {
     }
 
     // ── 99c mode state (same shape; separate file so modes never collide) ──────
-    pub fn ninetynine_markets(&self) -> HashSet<String> {
-        self.ninetynine.lock().unwrap().keys().cloned().collect()
-    }
-    pub fn record_99c(&self, market: &str, rec: BrownfoxRecord) {
+    /// Atomically claim a market for 99c: inserts the reservation and returns true
+    /// ONLY if the market wasn't already present (active OR terminal). The
+    /// contains-key + insert run under one lock, so it's the single linearization
+    /// point that makes concurrent buys for the same market impossible to
+    /// double-place. Returns false if already claimed/held/closed.
+    pub fn claim_99c(&self, market: &str, rec: BrownfoxRecord) -> bool {
         let mut m = self.ninetynine.lock().unwrap();
-        m.entry(market.to_string()).or_insert(rec);
+        if m.contains_key(market) {
+            return false;
+        }
+        m.insert(market.to_string(), rec);
         write_json(&self.dir.join("ninetynine.json"), &*m);
+        true
     }
     pub fn update_99c_status(&self, market: &str, status: &str) {
         let mut m = self.ninetynine.lock().unwrap();
