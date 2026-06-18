@@ -306,16 +306,23 @@ impl Brownfox {
             }
             if pos.buy_done {
                 let (bid, _) = self.exec.book(&token).await;
-                if holdings < EPS {
+                // Only treat a low /positions read as "nothing held" if we also
+                // never recorded a fill — otherwise it's API lag and abandoning
+                // would strand a real position (the forced-exit money bug).
+                let had_fill = pos.bought > EPS || pos.peak_holdings > EPS;
+                if holdings < EPS && !had_fill {
                     self.set_status(st, pos, "ABORTED");
                     info!("🦊 brownfox: target left {} before our buy filled — cancelled", label(&pos.title, &pos.outcome, &pos.market_id));
                     return;
                 }
-                if holdings < MIN_SHARES {
+                if holdings < MIN_SHARES && !had_fill {
                     self.cancel_all_sells(pos).await;
                     self.set_status(st, pos, "DONE");
+                    info!("🦊 brownfox: target left {} — no position held, closed", label(&pos.title, &pos.outcome, &pos.market_id));
                     return;
                 }
+                // We hold (or our buy filled per the order record): exit if the
+                // market is below our +mark, else let the resting sell ride.
                 if bid < pos.sell_price - 1e-9 {
                     info!("🦊 brownfox: target left {} & market below +mark — forcing exit", label(&pos.title, &pos.outcome, &pos.market_id));
                     pos.status = "EXITING".into();
@@ -365,35 +372,62 @@ impl Brownfox {
     async fn forced_exit(&self, pos: &mut Pos) {
         pos.exit_attempts += 1;
         let token = pos.token_id.clone();
+        let lbl = label(&pos.title, &pos.outcome, &pos.market_id);
+
+        // Cancel our resting sell(s) + any unfilled buy first.
         let sells_gone = self.cancel_all_sells(pos).await;
         if !pos.buy_done && self.exec.cancel_confirmed(pos.buy_order_id.as_deref().unwrap_or(""), &token).await {
             pos.buy_done = true;
         }
         if !sells_gone || !pos.buy_done {
-            warn!("🦊 brownfox: {} orders not all confirmed cancelled — retry next cycle", label(&pos.title, &pos.outcome, &pos.market_id));
+            warn!("🦊 brownfox: {} orders not all confirmed cancelled — retry next cycle (attempt {})", lbl, pos.exit_attempts);
             if pos.exit_attempts >= 12 {
                 pos.status = "STUCK".into();
                 self.store.update_brownfox_status(&pos.market_id, "STUCK");
+                warn!("⛔ brownfox: {} could not cancel orders after {} attempts — MANUAL ACTION NEEDED", lbl, pos.exit_attempts);
             }
             return;
         }
-        let holdings = self.exec.token_holdings(&token).await;
-        if holdings < MIN_SHARES {
+
+        // How much we ACTUALLY bought — from the order's matched size (authoritative,
+        // does NOT lag like the Data-API /positions read). on_sell refreshes this
+        // before calling us; refresh again since reconcile also calls forced_exit.
+        self.refresh_bought(pos).await;
+        let had_fill = pos.bought > EPS || pos.peak_holdings > EPS;
+
+        let mut holdings = self.exec.token_holdings(&token).await;
+        if holdings < MIN_SHARES && had_fill {
+            // We KNOW our buy filled, but /positions reads ~0 — almost certainly
+            // Data-API lag right after the fill. Re-read before trusting it, so we
+            // never abandon a position we actually hold (the bug that lost money).
+            warn!("🦊 brownfox: {} positions read {:.2} sh but our buy filled {:.2} sh — likely API lag, re-checking", lbl, holdings, pos.bought);
+            sleep(Duration::from_millis(1500)).await;
+            holdings = self.exec.token_holdings(&token).await;
+        }
+        if holdings < MIN_SHARES && !had_fill {
+            // Genuinely never held anything to sell — clean finish (now LOGGED).
             pos.status = "DONE".into();
             self.store.update_brownfox_status(&pos.market_id, "DONE");
+            info!("🦊 brownfox: {} forced exit — buy never filled, nothing to sell, closed", lbl);
             return;
         }
-        let left = self.market_sell_all(pos, holdings).await;
+
+        // Sweep the position. Sell the LARGER of the live read and our known fill,
+        // so a lagging /positions value can't shrink the sell below what we hold
+        // (the exchange caps at real balance, so this cannot over-sell).
+        let target = holdings.max(pos.bought);
+        info!("🦊 brownfox: {} forcing exit — selling up to {:.2} sh (positions {:.2}, filled {:.2})", lbl, target, holdings, pos.bought);
+        let left = self.market_sell_all(pos, target).await;
         if left < MIN_SHARES {
             pos.status = "DONE".into();
             self.store.update_brownfox_status(&pos.market_id, "DONE");
-            info!("🦊 brownfox: forced exit complete for {} ✅", label(&pos.title, &pos.outcome, &pos.market_id));
+            info!("🦊 brownfox: forced exit complete for {} ✅ ({:.2} sh left)", lbl, left);
         } else if pos.exit_attempts >= 12 {
             pos.status = "STUCK".into();
             self.store.update_brownfox_status(&pos.market_id, "STUCK");
-            warn!("⛔ brownfox: could NOT exit {:.2} sh in {} — MANUAL ACTION NEEDED", left, label(&pos.title, &pos.outcome, &pos.market_id));
+            warn!("⛔ brownfox: could NOT exit {:.2} sh in {} after {} attempts — MANUAL ACTION NEEDED", left, lbl, pos.exit_attempts);
         } else {
-            warn!("🦊 brownfox: forced exit left {:.2} sh in {} — retry", left, label(&pos.title, &pos.outcome, &pos.market_id));
+            warn!("🦊 brownfox: forced exit left {:.2} sh in {} — retry next cycle", left, lbl);
         }
     }
 
@@ -401,16 +435,16 @@ impl Brownfox {
     /// tracking avoids the Data-API-lag double-sell. Returns shares left.
     async fn market_sell_all(&self, pos: &Pos, known: f64) -> f64 {
         let token = pos.token_id.clone();
+        let lbl = label(&pos.title, &pos.outcome, &pos.market_id);
+        let retries = self.cfg.brownfox_market_sell_retries;
         let mut remaining = if known > 0.0 { known } else { self.exec.token_holdings(&token).await };
-        for _ in 0..self.cfg.brownfox_market_sell_retries {
-            if remaining < EPS {
-                break;
-            }
-            if remaining < MIN_SHARES {
-                break; // sub-min dust, unsellable
+        for attempt in 1..=retries {
+            if remaining < EPS || remaining < MIN_SHARES {
+                break; // done, or sub-min dust (unsellable)
             }
             let (bid, _) = self.exec.book(&token).await;
             if bid <= 0.0 {
+                warn!("🦊 brownfox: {} no bid to sell into — waiting (sweep {}/{})", lbl, attempt, retries);
                 sleep(Duration::from_millis(800)).await;
                 continue;
             }
@@ -421,20 +455,25 @@ impl Brownfox {
                     if msg.contains("balance") || msg.contains("allowance") {
                         remaining = self.exec.token_holdings(&token).await;
                     } else if msg.contains("minimum") || msg.contains("too small") {
+                        info!("🦊 brownfox: {} remainder below min size — stopping sweep", lbl);
                         break;
                     }
+                    warn!("🦊 brownfox: {} sweep {}/{} sell errored ({e}) — retry", lbl, attempt, retries);
                     sleep(Duration::from_millis(400)).await;
                     continue;
                 }
             };
             sleep(Duration::from_millis(1000)).await;
             let matched = self.exec.order_matched(&oid).await.unwrap_or(0.0);
-            // Always cancel the remainder + confirm before the next sweep.
+            // Always cancel the remainder + confirm before the next sweep. Track
+            // `remaining` locally (NOT via a fresh /positions read) to avoid the
+            // Data-API-lag double-sell.
             if !self.exec.cancel_confirmed(&oid, &token).await {
                 remaining = self.exec.token_holdings(&token).await;
                 continue;
             }
             remaining = (remaining - matched).max(0.0);
+            info!("🦊 brownfox: {} sweep {}/{}: sold {:.2} sh near bid {:.4} ({:.2} sh to go)", lbl, attempt, retries, matched, bid, remaining);
         }
         self.exec.token_holdings(&token).await
     }
