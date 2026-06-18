@@ -19,6 +19,13 @@ Two strategies, selected by env:
   (retried market-sell) if the target sells below it. Holdings-driven and
   restart-safe: state is reconstructed from on-chain holdings + open orders, so a
   restart never double-buys or strands a position.
+- **99c** (`USE_99C_MODE=true`, buy-and-hold) — like brownfox's *entry* but with
+  **no sell/exit**: for each market the target enters, place **one fixed-SHARE
+  buy** at the target's price and **hold to resolution**. For targets that buy
+  near 1.0 (e.g. BTC 5-minute at 0.99) and hold. One buy per market, restart-safe;
+  target sells are ignored; an unfilled buy is cancelled after
+  `NINETYNINE_BUY_MAX_AGE_SECS` so it doesn't strand capital. Takes priority over
+  brownfox when both are enabled.
 - **general copy replicator** (`USE_BROWNFOX_MODE=false`) — copy the target's
   buys/sells **proportionally** (`COPY_PERCENTAGE`): buys via optional weather
   price-chasing (or a GTC at their price), sells **capped at our holdings**
@@ -104,6 +111,7 @@ src/
     mod.rs                Side, TargetTrade
     monitor.rs            target feed: REST poll (run) or activity WS (run_ws)
     brownfox.rs           one-fixed-share-buy-per-market state machine (restart-safe)
+    ninetynine.rs         99c buy-and-hold: one fixed-share buy/market, hold to resolution
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer
@@ -120,7 +128,9 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `BROWNFOX_TRADE_SIZE_SHARES`, `BROWNFOX_SELL_MARKUP`, `BROWNFOX_RECONCILE_MS`,
 `BROWNFOX_MARKET_SELL_RETRIES`. Replicator: `COPY_PERCENTAGE`, `MAX_POSITIONS`,
 `MIN_TARGET_TRADE_VALUE_USD`; weather `USE_WEATHER_MODE`, `WEATHER_*`; auto-sell
-`AUTO_SELL_*`; stale `STALE_ORDER_*`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`AUTO_SELL_*`; stale `STALE_ORDER_*`. 99c: `USE_99C_MODE`,
+`NINETYNINE_TRADE_SIZE_SHARES`, `NINETYNINE_RECONCILE_MS`,
+`NINETYNINE_BUY_MAX_AGE_SECS`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

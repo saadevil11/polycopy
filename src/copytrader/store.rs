@@ -16,6 +16,8 @@ pub struct BrownfoxRecord {
     pub status: String, // ACTIVE / EXITING / DONE / ABORTED / STUCK
     #[serde(default)]
     pub title: String, // human-readable market name (default keeps old files loadable)
+    #[serde(default)]
+    pub placed_at_ms: u64, // wall-clock ms our buy was placed (99c stale-cancel across restarts; 0 = untracked)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -33,6 +35,8 @@ pub struct Store {
     dir: PathBuf,
     seen: Mutex<HashSet<String>>,
     brownfox: Mutex<HashMap<String, BrownfoxRecord>>,
+    /// 99c mode per-market records (same shape as brownfox; sell_price unused).
+    ninetynine: Mutex<HashMap<String, BrownfoxRecord>>,
     /// market_id -> token_id for markets the general replicator has copied
     /// (drives MAX_POSITIONS counting + the auto-sell token set).
     copied: Mutex<HashMap<String, String>>,
@@ -47,6 +51,8 @@ impl Store {
         let seen: HashSet<String> = read_json(&dir.join("seen.json")).unwrap_or_default();
         let brownfox: HashMap<String, BrownfoxRecord> =
             read_json(&dir.join("brownfox.json")).unwrap_or_default();
+        let ninetynine: HashMap<String, BrownfoxRecord> =
+            read_json(&dir.join("ninetynine.json")).unwrap_or_default();
         let copied: HashMap<String, String> =
             read_json(&dir.join("copied.json")).unwrap_or_default();
         let trades: Vec<TradeLog> = read_json(&dir.join("trades.json")).unwrap_or_default();
@@ -54,6 +60,7 @@ impl Store {
             dir,
             seen: Mutex::new(seen),
             brownfox: Mutex::new(brownfox),
+            ninetynine: Mutex::new(ninetynine),
             copied: Mutex::new(copied),
             trades: Mutex::new(trades),
         }
@@ -133,6 +140,40 @@ impl Store {
             .unwrap()
             .iter()
             .filter(|(_, r)| r.status != "DONE" && r.status != "ABORTED")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    // ── 99c mode state (same shape; separate file so modes never collide) ──────
+    pub fn ninetynine_markets(&self) -> HashSet<String> {
+        self.ninetynine.lock().unwrap().keys().cloned().collect()
+    }
+    pub fn record_99c(&self, market: &str, rec: BrownfoxRecord) {
+        let mut m = self.ninetynine.lock().unwrap();
+        m.entry(market.to_string()).or_insert(rec);
+        write_json(&self.dir.join("ninetynine.json"), &*m);
+    }
+    pub fn update_99c_status(&self, market: &str, status: &str) {
+        let mut m = self.ninetynine.lock().unwrap();
+        if let Some(r) = m.get_mut(market) {
+            r.status = status.to_string();
+            write_json(&self.dir.join("ninetynine.json"), &*m);
+        }
+    }
+    pub fn delete_99c(&self, market: &str) {
+        let mut m = self.ninetynine.lock().unwrap();
+        if m.remove(market).is_some() {
+            write_json(&self.dir.join("ninetynine.json"), &*m);
+        }
+    }
+    /// 99c markets still being managed (PENDING). FILLED/CANCELLED are terminal
+    /// but kept in the file so the market is never re-bought.
+    pub fn active_99c(&self) -> Vec<(String, BrownfoxRecord)> {
+        self.ninetynine
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| r.status != "FILLED" && r.status != "CANCELLED")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }

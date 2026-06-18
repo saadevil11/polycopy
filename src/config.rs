@@ -35,6 +35,13 @@ pub struct Config {
     pub brownfox_reconcile: Duration,
     pub brownfox_market_sell_retries: u32,
 
+    // 99c mode (one fixed-share buy per market at the target's price, HOLD to
+    // resolution — no sell, no exit). For "buy near 1.0 and hold" targets.
+    pub ninetynine_enabled: bool,
+    pub ninetynine_trade_size_shares: f64,
+    pub ninetynine_reconcile: Duration,
+    pub ninetynine_buy_max_age: Option<Duration>, // cancel an unfilled buy after this (None = never)
+
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
     pub max_positions: usize,            // distinct markets cap (0 = unlimited)
@@ -134,6 +141,13 @@ impl Config {
             brownfox_sell_markup: env_f64("BROWNFOX_SELL_MARKUP", 0.01),
             brownfox_reconcile: Duration::from_millis(env_u64("BROWNFOX_RECONCILE_MS", 3000)),
             brownfox_market_sell_retries: env_u64("BROWNFOX_MARKET_SELL_RETRIES", 8) as u32,
+            ninetynine_enabled: env_bool("USE_99C_MODE", false),
+            ninetynine_trade_size_shares: env_f64("NINETYNINE_TRADE_SIZE_SHARES", 50.0).max(5.0),
+            ninetynine_reconcile: Duration::from_millis(env_u64("NINETYNINE_RECONCILE_MS", 5000)),
+            ninetynine_buy_max_age: match env_u64("NINETYNINE_BUY_MAX_AGE_SECS", 600) {
+                0 => None,
+                s => Some(Duration::from_secs(s)),
+            },
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),
