@@ -44,6 +44,13 @@ pub struct Config {
     /// Only copy `<asset>-updown-5m-*` markets for these assets (empty = no filter).
     pub ninetynine_assets: Vec<String>,
 
+    // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
+    // target's first sell, run on a non-blocking worker).
+    pub sell_with_target_enabled: bool,
+    pub sell_with_target_trade_size_shares: f64,
+    pub sell_with_target_reconcile: Duration,
+    pub sell_with_target_market_sell_retries: u32,
+
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
     pub max_positions: usize,            // distinct markets cap (0 = unlimited)
@@ -159,6 +166,10 @@ impl Config {
                 s => Some(Duration::from_secs(s)),
             },
             ninetynine_assets: env_list("NINETYNINE_ASSETS", ""),
+            sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
+            sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
+            sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
+            sell_with_target_market_sell_retries: env_u64("SELL_WITH_TARGET_MARKET_SELL_RETRIES", 8) as u32,
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),

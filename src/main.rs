@@ -76,6 +76,11 @@ async fn main() -> Result<()> {
                 // 99c: one fixed-share buy per market at the target's price, hold.
                 let nn = copytrader::ninetynine::NinetyNine::new(cfg.clone(), exec, store.clone());
                 tokio::spawn(nn.run(rx));
+            } else if cfg.sell_with_target_enabled {
+                // sell-with-target: brownfox entry; on the target's sell, market-sell
+                // ALL on a non-blocking worker.
+                let swt = copytrader::sellwithtarget::SellWithTarget::new(cfg.clone(), exec, store.clone());
+                tokio::spawn(swt.run(rx));
             } else if cfg.brownfox_enabled {
                 // brownfox manages its own sells; no auto-sell/stale loops.
                 let bf = copytrader::brownfox::Brownfox::new(cfg.clone(), exec, store.clone());
@@ -121,6 +126,8 @@ fn banner(cfg: &Config) {
     let mode = if cfg.dry_run { "DRY-RUN (no orders placed)" } else { "LIVE" };
     let strat = if cfg.ninetynine_enabled {
         "99c (fixed-share buy at target price, hold to resolution)"
+    } else if cfg.sell_with_target_enabled {
+        "sell-with-target (buy at target price; market-sell all on target's sell)"
     } else if cfg.brownfox_enabled {
         "brownfox (fixed-share buy + marked sell + managed exit)"
     } else if cfg.weather_enabled {
@@ -140,6 +147,8 @@ fn banner(cfg: &Config) {
     tracing::info!("  target      : {}", mask(&cfg.target_trader));
     if cfg.ninetynine_enabled {
         tracing::info!("  99c size    : {} shares/market (hold to resolution)", cfg.ninetynine_trade_size_shares);
+    } else if cfg.sell_with_target_enabled {
+        tracing::info!("  swt size    : {} shares/market (sell all on target's sell)", cfg.sell_with_target_trade_size_shares);
     } else if cfg.brownfox_enabled {
         tracing::info!("  bf size     : {} shares/market", cfg.brownfox_trade_size_shares);
     } else {

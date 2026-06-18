@@ -37,6 +37,8 @@ pub struct Store {
     brownfox: Mutex<HashMap<String, BrownfoxRecord>>,
     /// 99c mode per-market records (same shape as brownfox; sell_price unused).
     ninetynine: Mutex<HashMap<String, BrownfoxRecord>>,
+    /// sell-with-target mode per-market records (separate file; sell_price unused).
+    sellwithtarget: Mutex<HashMap<String, BrownfoxRecord>>,
     /// market_id -> token_id for markets the general replicator has copied
     /// (drives MAX_POSITIONS counting + the auto-sell token set).
     copied: Mutex<HashMap<String, String>>,
@@ -53,6 +55,8 @@ impl Store {
             read_json(&dir.join("brownfox.json")).unwrap_or_default();
         let ninetynine: HashMap<String, BrownfoxRecord> =
             read_json(&dir.join("ninetynine.json")).unwrap_or_default();
+        let sellwithtarget: HashMap<String, BrownfoxRecord> =
+            read_json(&dir.join("sellwithtarget.json")).unwrap_or_default();
         let copied: HashMap<String, String> =
             read_json(&dir.join("copied.json")).unwrap_or_default();
         let trades: Vec<TradeLog> = read_json(&dir.join("trades.json")).unwrap_or_default();
@@ -61,6 +65,7 @@ impl Store {
             seen: Mutex::new(seen),
             brownfox: Mutex::new(brownfox),
             ninetynine: Mutex::new(ninetynine),
+            sellwithtarget: Mutex::new(sellwithtarget),
             copied: Mutex::new(copied),
             trades: Mutex::new(trades),
         }
@@ -174,6 +179,41 @@ impl Store {
             .unwrap()
             .iter()
             .filter(|(_, r)| r.status != "FILLED" && r.status != "CANCELLED")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    // ── sell-with-target mode state (separate file) ───────────────────────────
+    pub fn swt_markets(&self) -> HashSet<String> {
+        self.sellwithtarget.lock().unwrap().keys().cloned().collect()
+    }
+    pub fn record_swt(&self, market: &str, rec: BrownfoxRecord) {
+        let mut m = self.sellwithtarget.lock().unwrap();
+        m.entry(market.to_string()).or_insert(rec);
+        write_json(&self.dir.join("sellwithtarget.json"), &*m);
+    }
+    pub fn update_swt_status(&self, market: &str, status: &str) {
+        let mut m = self.sellwithtarget.lock().unwrap();
+        if let Some(r) = m.get_mut(market) {
+            r.status = status.to_string();
+            write_json(&self.dir.join("sellwithtarget.json"), &*m);
+        }
+    }
+    pub fn delete_swt(&self, market: &str) {
+        let mut m = self.sellwithtarget.lock().unwrap();
+        if m.remove(market).is_some() {
+            write_json(&self.dir.join("sellwithtarget.json"), &*m);
+        }
+    }
+    /// Resume set = ACTIVE or EXITING only. DONE/ABORTED/STUCK are TERMINAL (kept
+    /// in the file so the market is never re-bought, but never reloaded as active
+    /// — STUCK is NOT auto-resumed, to avoid a duplicate racing exit worker).
+    pub fn active_swt(&self) -> Vec<(String, BrownfoxRecord)> {
+        self.sellwithtarget
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| r.status == "ACTIVE" || r.status == "EXITING")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }

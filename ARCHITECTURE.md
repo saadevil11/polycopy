@@ -26,6 +26,14 @@ Two strategies, selected by env:
   target sells are ignored; an unfilled buy is cancelled after
   `NINETYNINE_BUY_MAX_AGE_SECS` so it doesn't strand capital. Takes priority over
   brownfox when both are enabled.
+- **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — brownfox's entry (one
+  fixed-SHARE buy per market at the target's price) but a different exit: **no +1c
+  resting sell**; on the target's **first sell** in that market (or a holdings
+  backstop for a missed WS event), **market-sell ALL our shares at any price** —
+  exit *with* the target. The market-sell runs on a **detached, semaphore-bounded
+  worker** so it never blocks detection/entry of other markets; lag-safe (sells
+  the order's matched fill + a mandatory final-holdings sweep), retried, restart-
+  safe (EXITING resumes; DONE/ABORTED/STUCK terminal). State in `sellwithtarget.json`.
 - **general copy replicator** (`USE_BROWNFOX_MODE=false`) — copy the target's
   buys/sells **proportionally** (`COPY_PERCENTAGE`): buys via optional weather
   price-chasing (or a GTC at their price), sells **capped at our holdings**
@@ -119,6 +127,7 @@ src/
     monitor.rs            target feed: REST poll (run) or activity WS (run_ws)
     brownfox.rs           one-fixed-share-buy-per-market state machine (restart-safe)
     ninetynine.rs         99c buy-and-hold: one fixed-share buy/market, hold to resolution
+    sellwithtarget.rs     brownfox entry; on target's sell, market-sell all (non-blocking worker)
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer

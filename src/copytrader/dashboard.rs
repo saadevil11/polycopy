@@ -59,6 +59,8 @@ async fn api_state(State(ctx): State<Ctx>) -> Json<Snap> {
     let open_pnl: f64 = positions.iter().map(|p| p.pnl).sum();
     let mode = if ctx.cfg.ninetynine_enabled {
         "99c"
+    } else if ctx.cfg.sell_with_target_enabled {
+        "sell-with-target"
     } else if ctx.cfg.brownfox_enabled {
         "brownfox"
     } else if ctx.cfg.weather_enabled {
