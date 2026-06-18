@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::Engine;
+use ethers_core::types::Address;
 use ethers_core::utils::to_checksum;
 use ethers_signers::{LocalWallet, Signer};
 use hmac::{Hmac, Mac};
@@ -55,15 +56,24 @@ pub async fn create_or_derive(
     client: &reqwest::Client,
     wallet: &LocalWallet,
 ) -> anyhow::Result<ApiCreds> {
-    // L1 derivation only works for an EOA-controlled key (types 0/1/2). Deposit
-    // wallets (sig type 3) can't be L1-derived here (would need an ERC-1271 ClobAuth
-    // signature); those MUST supply pre-created creds — see provided_creds() +
-    // Executor::new. POLY_ADDRESS + ClobAuth address = the signing EOA, checksummed.
+    // POLY_1271 deposit wallets (sig type 3) bind the API key to the DEPOSIT WALLET
+    // (== the order's signer, which the CLOB requires), so POLY_ADDRESS + the
+    // ClobAuth `address` field are the funder and the ClobAuth is ERC-7739/1271
+    // wrapped (the deposit wallet's isValidSignature validates it). Types 0/1/2 sign
+    // a plain ClobAuth with the EOA. Either way POLY_ADDRESS is EIP-55 checksummed.
     let ts = now_secs();
     let nonce = 0u64;
-    let addr = wallet.address();
-    let sig = signing::sign_clob_auth(wallet, addr, ts, nonce, cfg.chain_id)?;
-    let addr_hex = to_checksum(&addr, None);
+    let (auth_addr, sig) = if cfg.signature_type == 3 {
+        let funder: Address = cfg
+            .funder_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid FUNDER_ADDRESS for sig type 3: {e}"))?;
+        (funder, signing::sign_clob_auth_1271(wallet, funder, ts, nonce, cfg.chain_id)?)
+    } else {
+        let eoa = wallet.address();
+        (eoa, signing::sign_clob_auth(wallet, eoa, ts, nonce, cfg.chain_id)?)
+    };
+    let addr_hex = to_checksum(&auth_addr, None);
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)

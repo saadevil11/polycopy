@@ -65,16 +65,20 @@ impl Executor {
                 tracing::info!("clob auth: using provided API credentials (CLOB_API_KEY)");
                 c
             }
-            None => {
+            // Derive via L1 (sig type 3 = ERC-1271-wrapped ClobAuth bound to the
+            // deposit wallet; others = plain EOA). If a deposit-wallet derivation is
+            // rejected, point at the CLOB_API_* fallback.
+            None => auth::create_or_derive(cfg, &client, &wallet).await.map_err(|e| {
                 if cfg.signature_type == 3 {
-                    anyhow::bail!(
-                        "sig type 3 (deposit wallet) needs CLOB_API_KEY / CLOB_API_SECRET / \
-                         CLOB_API_PASSPHRASE in .env — the bot can't L1-derive a deposit-wallet \
-                         API key. Create an API key for the deposit wallet on Polymarket and set them."
-                    );
+                    anyhow::anyhow!(
+                        "{e}\nDeposit-wallet (sig type 3) L1 derivation failed. If this keeps \
+                         happening, set CLOB_API_KEY / CLOB_API_SECRET / CLOB_API_PASSPHRASE in \
+                         .env with an API key created for the deposit wallet."
+                    )
+                } else {
+                    e
                 }
-                auth::create_or_derive(cfg, &client, &wallet).await?
-            }
+            })?,
         };
 
         let funder_addr: Address = cfg
