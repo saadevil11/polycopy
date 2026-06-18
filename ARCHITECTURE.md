@@ -38,10 +38,12 @@ Two strategies, selected by env:
   the same markets as 99c but order-book-driven so it doesn't miss the trader's entries.
   Optional **liquidity-level avoidance filter** (`SCANNER_LIQUIDITY_FILTER`, `liquidity.rs`,
   a Rust port of the "Liquidity Levels - Sonarlab" indicator): before a 0.99 buy it checks
-  the coin's price on Binance 5m/15m/30m candles and **skips** the market if price is
-  touching any swing-high/low level (pivots 15L/5R, wick mitigation) on any of those TFs
-  (price at liquidity = reversal risk). Coins with no Binance USDT pair (HYPE) aren't traded
-  while it's on.
+  the coin's **current 5-minute candle** (the market's window) against every swing-high/low
+  level **pooled from the 5m + 15m + 30m timeframes** (pivots 15L/5R, wick mitigation), and
+  **skips** the market if that 5m candle has touched any level since the window opened
+  (price at liquidity = reversal risk; one touch disqualifies the market for its whole life).
+  Entry-only (a touch after we've bought doesn't sell — 99c holds). Coins with no Binance
+  USDT pair (HYPE) aren't traded while it's on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels

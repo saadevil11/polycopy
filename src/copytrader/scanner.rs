@@ -317,11 +317,12 @@ impl Scanner {
             Some(i) => i,
             None => return, // not a token we're tracking
         };
-        // Liquidity-level avoidance: skip the 0.99 if the coin's price is touching a
-        // swing high/low on any of the 5m/15m/30m timeframes (reversal risk).
+        // Liquidity-level avoidance: skip the 0.99 if the coin's current 5m candle has
+        // touched any swing level (pooled from 5m/15m/30m) during this window (reversal
+        // risk), or if we have no candle data to evaluate it.
         if !self.liq.clear_to_trade(&info.asset) {
             if self.skip_logged.lock().unwrap().insert(token.to_string()) {
-                info!("🔭 99c-scanner: SKIP {} — {} at a liquidity level (5m/15m/30m) or no candle data", label(&info.title, &info.outcome, token), info.asset.to_uppercase());
+                info!("🔭 99c-scanner: SKIP {} — {} 5m candle touched a liquidity level (5m/15m/30m) this window, or no candle data", label(&info.title, &info.outcome, token), info.asset.to_uppercase());
             }
             return;
         }
