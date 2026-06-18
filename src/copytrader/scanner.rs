@@ -26,7 +26,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, warn};
 
 use crate::clob::executor::Executor;
-use crate::clob::signing::{snap_price, SIDE_BUY};
+use crate::clob::signing::{snap_price, SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
 use crate::copytrader::liquidity::Liquidity;
 use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
@@ -436,6 +436,47 @@ impl Scanner {
                 } else {
                     self.store.update_scan_status(&token, "CANCELLED");
                     info!("🔭 99c-scanner: {} buy unfilled — cancelled to free capital", label(&rec.title, "", &token));
+                }
+            }
+        }
+
+        // LIQUIDITY STOP: for positions we HOLD whose market is still live, if the coin
+        // now touches a level (reversal risk), dump the shares with a GTC sell at the
+        // exit price (sweeps the bids down to the floor). Entry already avoided touched
+        // markets; this catches a touch that happens AFTER we bought, mid-window.
+        if self.cfg.scanner_liquidity_filter {
+            for (token, rec) in self.store.scan_filled() {
+                // asset is only known while the market is live (in the discovery map);
+                // once it resolves the token drops out and the position just settles.
+                let asset = match self.markets.lock().unwrap().get(&token).map(|i| i.asset.clone()) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                if !self.liq.at_level(&asset) {
+                    continue;
+                }
+                let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
+                if held < MIN_SHARES {
+                    held = size; // fallback to the configured size; exchange caps at balance
+                }
+                let tick = self.exec.tick_size(&token).await;
+                let neg_risk = self.exec.token_neg_risk(&token).await;
+                let price = snap_price(self.cfg.scanner_exit_price, tick);
+                match self.exec.place_gtc(&token, neg_risk, SIDE_SELL, price, held, tick).await {
+                    Ok(_) => {
+                        self.store.update_scan_status(&token, "EXITED");
+                        self.store.record_trade(TradeLog {
+                            time: now_str(),
+                            market: token.clone(),
+                            title: rec.title.clone(),
+                            side: "SELL".into(),
+                            size: held,
+                            price,
+                            status: "FILLED".into(),
+                        });
+                        info!("🔭 99c-scanner: LIQUIDITY STOP — {} touched a level, sold {:.0} sh GTC @ {:.2}", label(&rec.title, asset.to_uppercase().as_str(), &token), held, price);
+                    }
+                    Err(e) => warn!("🔭 99c-scanner: liquidity-stop sell failed for {} ({e}) — will retry", label(&rec.title, "", &token)),
                 }
             }
         }

@@ -276,25 +276,37 @@ impl Store {
             write_json(&self.dir.join("scanner.json"), &*m);
         }
     }
-    /// Scanner tokens still being managed (not yet FILLED/CANCELLED) — for resume.
+    /// Scanner buys still being CONFIRMED (status ACTIVE — placed, awaiting fill or
+    /// stale-cancel). For the reconcile fill-check + resume.
     pub fn active_scan(&self) -> Vec<(String, BrownfoxRecord)> {
         self.scanner
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, r)| r.status != "FILLED" && r.status != "CANCELLED")
+            .filter(|(_, r)| r.status == "ACTIVE")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
-    /// Drop terminal scanner records (FILLED/CANCELLED) whose buy was placed before
-    /// `cutoff_ms`, so scanner.json stays bounded (the scanner touches thousands of
-    /// 5m markets/day). A resolved market's token never recurs, so this can't cause a
+    /// Scanner positions we HOLD (status FILLED) — subject to the liquidity-stop while
+    /// their market is still live.
+    pub fn scan_filled(&self) -> Vec<(String, BrownfoxRecord)> {
+        self.scanner
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| r.status == "FILLED")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+    /// Drop terminal scanner records (FILLED/CANCELLED/EXITED) whose buy was placed
+    /// before `cutoff_ms`, so scanner.json stays bounded (the scanner touches thousands
+    /// of 5m markets/day). A resolved market's token never recurs, so this can't cause a
     /// re-buy. Keeps ACTIVE records regardless.
     pub fn prune_scan(&self, cutoff_ms: u64) {
         let mut m = self.scanner.lock().unwrap();
         let before = m.len();
         m.retain(|_, r| {
-            let terminal = r.status == "FILLED" || r.status == "CANCELLED";
+            let terminal = r.status == "FILLED" || r.status == "CANCELLED" || r.status == "EXITED";
             !(terminal && r.placed_at_ms < cutoff_ms)
         });
         if m.len() != before {

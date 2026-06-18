@@ -42,7 +42,8 @@ Two strategies, selected by env:
   level **pooled from the 5m + 15m + 30m timeframes** (pivots 15L/5R, wick mitigation), and
   **skips** the market if that 5m candle has touched any level since the window opened
   (price at liquidity = reversal risk; one touch disqualifies the market for its whole life).
-  Entry-only (a touch after we've bought doesn't sell — 99c holds). Coins with no Binance
+  Also a **liquidity STOP**: if a market we already bought touches a level while still live,
+  we dump the shares with a GTC sell at `SCANNER_EXIT_PRICE` (0.10). Coins with no Binance
   USDT pair (HYPE) aren't traded while it's on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit

@@ -179,6 +179,28 @@ impl Liquidity {
         }
         !level_touched(cur_hi, cur_lo, &highs, &lows)
     }
+
+    /// For the post-entry LIQUIDITY STOP: true iff there IS live data and the coin's
+    /// current 5m candle has touched a pooled level. Unlike `clear_to_trade`, missing
+    /// data returns false (we never DUMP a held position just because data is absent).
+    pub fn at_level(&self, coin: &str) -> bool {
+        if !self.enabled || binance_symbol(coin).is_none() {
+            return false;
+        }
+        let map = self.series.lock().unwrap();
+        let (cur_hi, cur_lo) = match map.get(&format!("{coin}:5m")) {
+            Some(s) if s.cur_hi > 0.0 => (s.cur_hi, s.cur_lo),
+            _ => return false,
+        };
+        let (mut highs, mut lows): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
+        for tf in TFS {
+            if let Some(s) = map.get(&format!("{coin}:{tf}")) {
+                highs.extend(s.highs.iter().copied());
+                lows.extend(s.lows.iter().copied());
+            }
+        }
+        level_touched(cur_hi, cur_lo, &highs, &lows)
+    }
 }
 
 /// True if the 5m window candle (`cur_hi`/`cur_lo`) reached any pooled level: its high
