@@ -35,9 +35,13 @@ pub struct Executor {
     data_api_url: String,
     chain_id: u64,
     sig_type: u8,
-    /// funder / Safe address, verbatim as the user supplied it (the `maker`).
+    /// funder / Safe address, verbatim as the user supplied it (used for the
+    /// Data-API `user=` reads, which are case-insensitive).
     funder: String,
     funder_addr: Address,
+    /// EIP-55 checksummed funder — the order `maker` MUST be checksummed or the
+    /// exchange rejects it ("maker address not allowed"). Matches py-clob-client.
+    funder_checksum: String,
     signer_checksum: String,
     exchange_v2: Address,
     neg_risk_exchange_v2: Address,
@@ -74,6 +78,7 @@ impl Executor {
             sig_type: cfg.signature_type,
             funder: cfg.funder_address.clone(),
             funder_addr,
+            funder_checksum: to_checksum(&funder_addr, None),
             exchange_v2: cfg.exchange_v2.parse()?,
             neg_risk_exchange_v2: cfg.neg_risk_exchange_v2.parse()?,
             dry_run: cfg.dry_run,
@@ -159,7 +164,7 @@ impl Executor {
         let body = json!({
             "order": {
                 "salt": salt as u64,
-                "maker": self.funder,
+                "maker": self.funder_checksum,
                 "signer": self.signer_checksum,
                 "tokenId": token_id,
                 "makerAmount": maker_amount.to_string(),

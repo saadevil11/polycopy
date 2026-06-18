@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::Engine;
+use ethers_core::utils::to_checksum;
 use ethers_signers::{LocalWallet, Signer};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -39,7 +40,10 @@ pub async fn create_or_derive(
     let nonce = 0u64;
     let addr = wallet.address();
     let sig = signing::sign_clob_auth(wallet, addr, ts, nonce, cfg.chain_id)?;
-    let addr_hex = format!("{addr:?}");
+    // EIP-55 checksummed, matching py-clob-client-v2 (eth_account returns it
+    // checksummed). A lowercase POLY_ADDRESS here can derive an api key whose
+    // owner doesn't resolve to the Safe proxy → "maker address not allowed".
+    let addr_hex = to_checksum(&addr, None);
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)
