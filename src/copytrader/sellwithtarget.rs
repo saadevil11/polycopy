@@ -87,7 +87,7 @@ impl SellWithTarget {
         let mut st = self.load().await;
         let mut tick = interval(self.cfg.sell_with_target_reconcile);
         info!(
-            "🤝 sell-with-target: MARKET-buy {} shares/market (cross ask+{:.2}). On the target's sell — vs our avg cost: AT/ABOVE → CHASE THE BID for good fills; BELOW → DUMP via a GTC sell @ {:.2}. Non-blocking workers, retries={}",
+            "🤝 sell-with-target: FAK market-buy {} shares/market (fill-and-kill, cap ask+{:.2}). On the target's sell — vs our avg cost: AT/ABOVE → CHASE THE BID for good fills; BELOW → DUMP via a GTC sell @ {:.2}. Non-blocking workers, retries={}",
             self.cfg.sell_with_target_trade_size_shares, self.cfg.sell_with_target_buy_ahead, self.cfg.sell_with_target_exit_price, self.cfg.sell_with_target_market_sell_retries
         );
         loop {
@@ -217,31 +217,37 @@ impl SellWithTarget {
             title: t.title.clone(),
             outcome: t.outcome.clone(),
         };
-        match self.exec.place_gtc(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
+        // Single-shot FAK (fill-and-kill / IOC): fills whatever crosses NOW up to
+        // buy_price, cancels the rest — no resting buy is left behind. We hold exactly
+        // what filled (read from the order, lag-free).
+        match self.exec.place_order(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick, "FAK").await {
             Ok(oid) => {
+                sleep(Duration::from_millis(800)).await;
+                let filled = self.exec.order_matched(&oid).await.unwrap_or(0.0);
+                if filled < MIN_SHARES {
+                    warn!("🤝 sell-with-target: FAK buy filled only {:.2} sh in {} (book thin / moved past {:.4}) — releasing market", filled, label(&t.title, &t.outcome, &market), buy_price);
+                    self.store.delete_swt(&market);
+                    st.entered.remove(&market);
+                    return;
+                }
                 pos.buy_order_id = Some(oid);
+                pos.bought = filled;
                 self.store.record_trade(TradeLog {
                     time: now_str(),
                     market: market.clone(),
                     title: t.title.clone(),
                     side: "BUY".into(),
-                    size,
+                    size: filled,
                     price: buy_price,
-                    status: "RESTING".into(),
+                    status: "FILLED".into(),
                 });
+                info!("🤝 sell-with-target: FAK buy filled {:.2} sh in {} (cap @ {:.4}) — holding until the target sells", filled, label(&t.title, &t.outcome, &market), buy_price);
                 st.positions.insert(market, pos);
             }
             Err(e) => {
-                let (found, _) = self.find_order(&pos.token_id, "BUY", buy_price).await;
-                if let Some(oid) = found {
-                    pos.buy_order_id = Some(oid);
-                    warn!("🤝 sell-with-target: place errored ({e}) but found resting buy in {} - adopting", label(&t.title, &t.outcome, &market));
-                    st.positions.insert(market, pos);
-                } else {
-                    warn!("🤝 sell-with-target: buy placement failed in {} ({e}) - releasing market", label(&t.title, &t.outcome, &market));
-                    self.store.delete_swt(&market);
-                    st.entered.remove(&market);
-                }
+                warn!("🤝 sell-with-target: FAK buy placement failed in {} ({e}) - releasing market", label(&t.title, &t.outcome, &market));
+                self.store.delete_swt(&market);
+                st.entered.remove(&market);
             }
         }
     }

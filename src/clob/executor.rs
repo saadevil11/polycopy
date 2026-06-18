@@ -148,6 +148,7 @@ impl Executor {
 
     /// Place a GTC limit order (BUY=0 / SELL=1) at EXACTLY `price` (snapped to
     /// tick) for `size` shares on `token_id`. Returns the CLOB order id.
+    /// GTC limit (the unfilled remainder rests). Thin wrapper over `place_order`.
     pub async fn place_gtc(
         &self,
         token_id: &str,
@@ -156,6 +157,25 @@ impl Executor {
         price: f64,
         size: f64,
         tick: f64,
+    ) -> anyhow::Result<String> {
+        self.place_order(token_id, neg_risk, side, price, size, tick, "GTC").await
+    }
+
+    /// Place an order with an explicit order type:
+    ///  - "GTC" — rests the unfilled remainder on the book.
+    ///  - "FAK" — fill-and-kill (IOC): fill whatever crosses NOW, cancel the rest.
+    ///  - "FOK" — fill-or-kill: all-or-nothing.
+    /// `orderType` is a POST-body field, NOT part of the signed hash — so it doesn't
+    /// affect signing (the same validated EIP-712 order works for any type).
+    pub async fn place_order(
+        &self,
+        token_id: &str,
+        neg_risk: bool,
+        side: u8,
+        price: f64,
+        size: f64,
+        tick: f64,
+        order_type: &str,
     ) -> anyhow::Result<String> {
         let tick = if tick > 0.0 { tick } else { 0.01 };
         let snapped = signing::snap_price(price, tick);
@@ -215,7 +235,7 @@ impl Executor {
                 "signature": signature,
             },
             "owner": self.creds.api_key,
-            "orderType": "GTC",
+            "orderType": order_type,
             "deferExec": false,
             "postOnly": false,
         });

@@ -26,10 +26,11 @@ Two strategies, selected by env:
   target sells are ignored; an unfilled buy is cancelled after
   `NINETYNINE_BUY_MAX_AGE_SECS` so it doesn't strand capital. Takes priority over
   brownfox when both are enabled.
-- **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **MARKET-buy** entry (one
-  fixed-SHARE marketable buy per market — a limit `SELL_WITH_TARGET_BUY_AHEAD` above
-  the best ask so it crosses + fills now; a limit at the target's stale price rarely
-  fills because the book has moved up). **No +1c resting sell**; on the target's
+- **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
+  (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
+  `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels
+  any unfilled remainder; we hold exactly what filled, read from the order. A plain
+  limit at the target's stale price rarely fills because the book has moved up). **No +1c resting sell**; on the target's
   **first sell** the exit style depends on their sell price vs **our average fill cost**
   (read lag-free from our `/data/trades`): (a) **sold AT/ABOVE our cost (profit) →
   chase the bid** — sell the remainder at ~1 tick under the best bid each round so we
