@@ -39,4 +39,10 @@ pub struct TargetTrade {
     pub title: String,  // human-readable market name
     pub outcome: String, // outcome bought/sold, e.g. "Yes" / "No"
     pub slug: String,    // market/event slug, e.g. "btc-updown-5m-1781699700"
+    /// Monotonic instant we parsed this trade off the feed — for the detect→place
+    /// latency (the part WE control: channel hop + book reads + order POST).
+    pub detected_at: std::time::Instant,
+    /// The target trade's server timestamp in ms (0 = unknown) — for the total
+    /// target→place lag (how far behind the target we land; needs synced clocks).
+    pub trade_ts_ms: u64,
 }

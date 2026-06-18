@@ -175,6 +175,7 @@ impl Brownfox {
                 status: "ACTIVE".into(),
                 title: t.title.clone(),
                 placed_at_ms: 0, // brownfox manages by reconcile/holdings, not a placement timer
+                order_id: String::new(),
             },
         );
         let mut pos = Pos {

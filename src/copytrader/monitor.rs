@@ -214,6 +214,18 @@ fn parse_trade(it: &Value) -> Option<TargetTrade> {
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string(),
+        detected_at: std::time::Instant::now(),
+        // Activity feed `timestamp` is epoch seconds; normalise to ms (accept ms too).
+        trade_ts_ms: {
+            let t = num(it, "timestamp");
+            if t <= 0.0 {
+                0
+            } else if t < 1e12 {
+                (t * 1000.0) as u64
+            } else {
+                t as u64
+            }
+        },
     })
 }
 

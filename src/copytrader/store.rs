@@ -18,6 +18,8 @@ pub struct BrownfoxRecord {
     pub title: String, // human-readable market name (default keeps old files loadable)
     #[serde(default)]
     pub placed_at_ms: u64, // wall-clock ms our buy was placed (99c stale-cancel across restarts; 0 = untracked)
+    #[serde(default)]
+    pub order_id: String, // our buy order id — for LAG-FREE fill checks via order_matched (CLOB order data), never /positions
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,6 +170,15 @@ impl Store {
         let mut m = self.ninetynine.lock().unwrap();
         if let Some(r) = m.get_mut(market) {
             r.status = status.to_string();
+            write_json(&self.dir.join("ninetynine.json"), &*m);
+        }
+    }
+    /// Record our buy order id once placed, so reconcile can read the real fill via
+    /// order_matched (CLOB order data) instead of the lagging Data-API /positions.
+    pub fn set_99c_order_id(&self, market: &str, order_id: &str) {
+        let mut m = self.ninetynine.lock().unwrap();
+        if let Some(r) = m.get_mut(market) {
+            r.order_id = order_id.to_string();
             write_json(&self.dir.join("ninetynine.json"), &*m);
         }
     }

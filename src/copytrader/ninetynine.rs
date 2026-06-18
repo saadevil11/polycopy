@@ -126,6 +126,7 @@ impl NinetyNine {
                 status: "ACTIVE".into(),
                 title: t.title.clone(),
                 placed_at_ms: now_ms(),
+                order_id: String::new(),
             },
         );
         if !claimed {
@@ -143,7 +144,10 @@ impl NinetyNine {
         let size = self.cfg.ninetynine_trade_size_shares.max(MIN_SHARES);
         let neg_risk = self.exec.token_neg_risk(&t.token_id).await;
         match self.exec.place_gtc(&t.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
-            Ok(_) => {
+            Ok(oid) => {
+                // Persist the order id so reconcile checks the fill via order_matched
+                // (CLOB order data, lag-free) instead of the laggy /positions.
+                self.store.set_99c_order_id(&market, &oid);
                 self.store.record_trade(TradeLog {
                     time: now_str(),
                     market: market.clone(),
@@ -158,7 +162,8 @@ impl NinetyNine {
                 // Adopt a live resting buy if it actually landed; else RELEASE the
                 // claim so a later target buy in this market can retry.
                 let (found, _) = self.find_order(&t.token_id, "BUY", buy_price).await;
-                if found.is_some() {
+                if let Some(id) = &found {
+                    self.store.set_99c_order_id(&market, id);
                     warn!("💯 99c: place errored ({e}) but found resting buy in {} - keeping", label(&t.title, &t.outcome, &market));
                 } else {
                     warn!("💯 99c: buy placement failed in {} ({e}) - releasing market", label(&t.title, &t.outcome, &market));
@@ -173,13 +178,18 @@ impl NinetyNine {
     async fn reconcile(&self) {
         let size = self.cfg.ninetynine_trade_size_shares.max(MIN_SHARES);
         for (market, rec) in self.store.active_99c() {
-            let holdings = self.exec.token_holdings(&rec.token_id).await;
-            let (oid, matched) = self.find_order(&rec.token_id, "BUY", rec.buy_price).await;
-            let filled = holdings.max(matched);
+            // Fill check from the buy ORDER's matched size (CLOB order data, lag-free)
+            // — NEVER the laggy Data-API /positions. Legacy records with no stored id
+            // fall back to the resting order's matched amount.
+            let matched = if !rec.order_id.is_empty() {
+                self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0)
+            } else {
+                self.find_order(&rec.token_id, "BUY", rec.buy_price).await.1
+            };
 
-            if filled >= size - EPS {
+            if matched >= size - EPS {
                 self.store.update_99c_status(&market, "FILLED");
-                info!("💯 99c: filled {:.2} sh in {} — holding to resolution ✅", filled, label(&rec.title, "", &market));
+                info!("💯 99c: filled {:.2} sh in {} — holding to resolution ✅", matched, label(&rec.title, "", &market));
                 continue;
             }
             let stale = self
@@ -188,13 +198,23 @@ impl NinetyNine {
                 .map(|m| now_ms().saturating_sub(rec.placed_at_ms) as u128 > m.as_millis())
                 .unwrap_or(false);
             if stale {
-                if let Some(id) = oid {
-                    let _ = self.exec.cancel_confirmed(&id, &rec.token_id).await;
+                // Cancel the resting buy (by stored id, else find it on the book).
+                let oid = if !rec.order_id.is_empty() {
+                    Some(rec.order_id.clone())
+                } else {
+                    self.find_order(&rec.token_id, "BUY", rec.buy_price).await.0
+                };
+                if let Some(id) = &oid {
+                    let _ = self.exec.cancel_confirmed(id, &rec.token_id).await;
                 }
-                let held = self.exec.token_holdings(&rec.token_id).await;
-                if held > EPS {
+                // Final fill before the cancel, from order data (not /positions).
+                let filled = match &oid {
+                    Some(id) => self.exec.order_matched(id).await.unwrap_or(0.0),
+                    None => 0.0,
+                };
+                if filled > EPS {
                     self.store.update_99c_status(&market, "FILLED");
-                    info!("💯 99c: {} filled {:.2}/{:.0} sh before timeout — cancelled the rest, holding", label(&rec.title, "", &market), held, size);
+                    info!("💯 99c: {} filled {:.2}/{:.0} sh before timeout — cancelled the rest, holding", label(&rec.title, "", &market), filled, size);
                 } else {
                     let secs = self.cfg.ninetynine_buy_max_age.map(|d| d.as_secs()).unwrap_or(0);
                     self.store.update_99c_status(&market, "CANCELLED");

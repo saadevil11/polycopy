@@ -60,8 +60,15 @@ async fn main() -> Result<()> {
     // IPs); DATA_SOURCE=rest -> Data-API polling (reliable on AWS).
     match cfg.data_source {
         DataSource::Ws => {
-            tracing::info!("monitor: WebSocket (DATA_SOURCE=ws)");
-            tokio::spawn(copytrader::monitor::run_ws(cfg.clone(), store.clone(), tx, log_filter));
+            // WebSocket is the PRIMARY, real-time trade feed (used for all detection
+            // + execution decisions). A lightweight /activity poll runs ALONGSIDE it
+            // purely as a safety net: the WS can silently drop a frame on a reconnect
+            // gap, and /activity (the same trade feed, fresh in ~1-2s — NOT the laggy
+            // /positions snapshot) catches any sell the WS missed within a poll. Both
+            // share the store's dedup, so each trade dispatches exactly once.
+            tracing::info!("monitor: WebSocket (primary) + /activity safety net (DATA_SOURCE=ws)");
+            tokio::spawn(copytrader::monitor::run_ws(cfg.clone(), store.clone(), tx.clone(), log_filter.clone()));
+            tokio::spawn(copytrader::monitor::run(cfg.clone(), store.clone(), tx, log_filter));
         }
         DataSource::Rest => {
             tracing::info!("monitor: REST polling (DATA_SOURCE=rest)");

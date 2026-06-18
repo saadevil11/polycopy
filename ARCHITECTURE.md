@@ -51,8 +51,10 @@ target trader ──(monitor: WS or REST)──▶ TargetTrade channel ──▶
 
 - **monitor** (`copytrader/monitor.rs`) — `DATA_SOURCE=rest` polls the Data API
   `/activity` for the target; `DATA_SOURCE=ws` streams the activity WebSocket
-  (`wss://ws-live-data.polymarket.com`). Both dedup via the store and emit
-  `TargetTrade`s.
+  (`wss://ws-live-data.polymarket.com`) **and** runs the `/activity` poll alongside
+  it as a fast safety net (the WS can drop a frame on a reconnect; `/activity` is the
+  same trade feed, fresh in ~1-2s — NOT the laggy `/positions` snapshot — and catches
+  it within a poll). Both dedup via the store and emit `TargetTrade`s.
 - **strategy** — `brownfox.rs` (state machine) or `replicator.rs` (+ `weather.rs`
   chase, `autosell.rs` resting-limit maintainer, `stale.rs` BUY sweep).
 - **store** (`copytrader/store.rs`) — JSON persistence: dedup set, brownfox
@@ -214,3 +216,11 @@ see [`deploy/AWS_DEPLOY.md`](deploy/AWS_DEPLOY.md) and
 6. The L2 HMAC body must be the **exact bytes POSTed** — build the compact JSON
    once, sign and send the same string.
 7. Secrets (`PRIVATE_KEY`) never get committed — `.env` is gitignored.
+8. **The Data-API `/positions` snapshot lags minutes — NEVER gate trading on it.**
+   Detect the target's trades from the **WebSocket** (+ the `/activity` safety-net
+   poll); track **our** position from the buy/sell **orders' matched fills**
+   (`order_matched` / `open_orders` — CLOB order data, lag-free). `/positions`
+   (`token_holdings*`) is allowed only for the dashboard/PnL and one-time startup
+   recovery, never in the live detect/execute path. (active in `sellwithtarget` +
+   `ninetynine`; `brownfox`/`replicator`/`autosell` still read `/positions` and
+   should be converted before they're used live.)

@@ -17,7 +17,7 @@
 //! EXITING records resume (one worker each); DONE/ABORTED/STUCK are terminal.
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::FutureExt;
 use tokio::sync::mpsc::Receiver;
@@ -48,18 +48,12 @@ struct Pos {
     status: String, // ACTIVE / EXITING / DONE / ABORTED / STUCK
     title: String,
     outcome: String,
-    /// Latched once we've positively seen the target hold this token — the
-    /// missed-sell backstop only fires after this (avoids the post-entry
-    /// positions-lag false-trigger).
-    target_confirmed_held: bool,
 }
 
 #[derive(Default)]
 struct State {
     positions: HashMap<String, Pos>,
     entered: HashSet<String>,
-    target_tokens: Option<HashSet<String>>,
-    target_at: Option<Instant>,
 }
 
 /// Owned snapshot handed to a detached exit worker (borrows nothing from State).
@@ -113,6 +107,10 @@ impl SellWithTarget {
             let neg_risk = self.exec.token_neg_risk(&rec.token_id).await;
             let tick = self.exec.tick_size(&rec.token_id).await;
             let (buy_oid, matched) = self.find_order(&rec.token_id, "BUY", rec.buy_price).await;
+            // STARTUP RECOVERY ONLY (not the live path): after a restart the buy may
+            // have filled and left the book, so we can't reconstruct our size from
+            // order data alone — read /positions ONCE here to recover it. Every LIVE
+            // decision below uses CLOB order fills, never /positions.
             let holdings = self.exec.token_holdings(&rec.token_id).await;
 
             if rec.status == "EXITING" {
@@ -144,7 +142,6 @@ impl SellWithTarget {
                     status: "ACTIVE".into(),
                     title: rec.title.clone(),
                     outcome: String::new(),
-                    target_confirmed_held: holdings > EPS || matched > EPS,
                 },
             );
         }
@@ -190,6 +187,7 @@ impl SellWithTarget {
                 status: "ACTIVE".into(),
                 title: t.title.clone(),
                 placed_at_ms: 0,
+                order_id: String::new(),
             },
         );
         info!("🤝 sell-with-target: target BOUGHT {} @ {:.4} ({:.0} sh) → placing {} sh buy @ {:.4}, will sell WITH the target", label(&t.title, &t.outcome, &market), t.price, t.size, size, buy_price);
@@ -204,7 +202,6 @@ impl SellWithTarget {
             status: "ACTIVE".into(),
             title: t.title.clone(),
             outcome: t.outcome.clone(),
-            target_confirmed_held: false,
         };
         match self.exec.place_gtc(&pos.token_id, neg_risk, SIDE_BUY, buy_price, size, tick).await {
             Ok(oid) => {
@@ -256,9 +253,12 @@ impl SellWithTarget {
         if let Some(oid) = pos.buy_order_id.clone() {
             let _ = self.exec.cancel_confirmed(&oid, &pos.token_id).await;
         }
+        // Authoritative size from the buy ORDER's matched fill (CLOB order data,
+        // lag-free). The buy is now cancelled, so order_matched reflects the FINAL
+        // filled amount — no late fills can land. NO Data-API /positions read: it
+        // lags and would either stall the exit or abort a real position.
         self.refresh_bought(pos).await;
-        let holdings = self.exec.token_holdings(&pos.token_id).await;
-        let known = pos.bought.max(holdings);
+        let known = pos.bought;
 
         if known < MIN_SHARES {
             // Target left before our buy filled (or only dust) — nothing to sell.
@@ -282,6 +282,11 @@ impl SellWithTarget {
         self.spawn_exit(job);
     }
 
+    /// Periodic: keep our authoritative buy fill (`bought`, from CLOB order data)
+    /// fresh while we wait for the target's sell. The old missed-sell backstop —
+    /// which polled the laggy Data-API /positions for the TARGET and fired minutes
+    /// late — is GONE: a dropped WS sell is now caught in ~1-2s by the /activity
+    /// safety-net poll (see monitor), which delivers it here as a normal Sell event.
     async fn reconcile(&self, st: &mut State) {
         let markets: Vec<String> = st.positions.keys().cloned().collect();
         for market in markets {
@@ -290,17 +295,6 @@ impl SellWithTarget {
                 _ => continue,
             };
             self.refresh_bought(&mut pos).await;
-            // Backstop for a missed/dropped WS sell: if the target no longer holds
-            // the token (only AFTER we've confirmed they held it), exit with them.
-            let held = self.target_holds(st, &pos.token_id).await;
-            if !held && pos.target_confirmed_held {
-                info!("🤝 sell-with-target: target no longer holds {} (missed sell?) — exiting", label(&pos.title, &pos.outcome, &pos.market_id));
-                self.begin_exit(st, &mut pos).await;
-                continue;
-            }
-            if held {
-                pos.target_confirmed_held = true;
-            }
             st.positions.insert(market, pos);
         }
     }
@@ -342,23 +336,6 @@ impl SellWithTarget {
         }
         (None, 0.0)
     }
-
-    async fn target_holds(&self, st: &mut State, token: &str) -> bool {
-        if self.cfg.target_trader.is_empty() {
-            return true;
-        }
-        let stale = st.target_at.map(|t| t.elapsed() > Duration::from_secs(15)).unwrap_or(true);
-        if st.target_tokens.is_none() || stale {
-            if let Some(set) = self.exec.token_holdings_set(&self.cfg.target_trader).await {
-                st.target_tokens = Some(set);
-                st.target_at = Some(Instant::now());
-            }
-        }
-        match &st.target_tokens {
-            Some(s) => s.contains(token),
-            None => true, // unknown (fetch failed) -> assume holds; don't false-exit
-        }
-    }
 }
 
 /// Detached worker: market-sell the position, then a MANDATORY final holdings
@@ -372,34 +349,30 @@ async fn exit_worker(exec: Arc<Executor>, store: Arc<Store>, sem: Arc<Semaphore>
     let lbl = label(&job.title, &job.outcome, &job.market);
     info!("🤝 sell-with-target: exiting {} — selling up to {:.2} sh", lbl, job.known_shares);
 
+    // Sweep the bid side until we've sold the whole (order-confirmed) position or
+    // the book runs out of bids. `remaining` is tracked from the SELL orders' real
+    // fills (order_matched) — NEVER from the laggy Data-API /positions — so a fill
+    // is never double-counted and we never falsely think shares remain. The buy was
+    // already cancelled + its final fill read in begin_exit, so no late fill can
+    // land after handoff (the old mandatory /positions re-sweep is gone).
     let mut remaining = job.known_shares;
-    let mut left = sweep(&exec, &store, &job, &lbl, retries, &mut remaining).await;
-    // MANDATORY: a fill can land between our cancel and handoff; re-read the REAL
-    // holdings and run a couple more bounded sweeps so nothing is stranded.
-    for _ in 0..2 {
-        let holdings = exec.token_holdings(&job.token).await;
-        if holdings < MIN_SHARES {
-            left = holdings;
-            break;
-        }
-        info!("🤝 sell-with-target: {} post-handoff holdings {:.2} sh — extra sweep", lbl, holdings);
-        remaining = holdings;
-        left = sweep(&exec, &store, &job, &lbl, retries, &mut remaining).await;
-    }
+    sweep(&exec, &store, &job, &lbl, retries, &mut remaining).await;
 
-    if left < MIN_SHARES {
+    if remaining < MIN_SHARES {
         store.update_swt_status(&job.market, "DONE");
-        info!("🤝 sell-with-target: exit complete for {} ✅ ({:.2} sh left)", lbl, left);
+        info!("🤝 sell-with-target: exit complete for {} ✅ ({:.2} sh left)", lbl, remaining);
     } else {
         store.update_swt_status(&job.market, "STUCK");
-        warn!("⛔ sell-with-target: could NOT sell {:.2} sh in {} — MANUAL ACTION NEEDED", left, lbl);
+        warn!("⛔ sell-with-target: sold all the book would take, {:.2} sh still remain in {} (no more bids) — MANUAL ACTION NEEDED", remaining, lbl);
     }
 }
 
-/// One market-sell pass: walk the book, retrying, tracking `remaining` LOCALLY
-/// (never from a lagging /positions read) so it can't double-sell; the exchange
-/// caps at the real balance so it can't over-sell. Records each fill. Returns the
-/// shares still held per the exchange.
+/// One market-sell pass: walk the book, retrying, tracking `remaining` purely from
+/// the SELL orders' real fills (`order_matched`, authoritative CLOB order data) —
+/// NEVER from the lagging Data-API /positions. The exchange caps at our real
+/// balance so it can't over-sell; we decrement only by what actually matched, so
+/// it can't double-sell. Records each fill. `remaining` is the out-value the caller
+/// uses to decide DONE vs STUCK.
 async fn sweep(
     exec: &Arc<Executor>,
     store: &Arc<Store>,
@@ -407,7 +380,7 @@ async fn sweep(
     lbl: &str,
     retries: u32,
     remaining: &mut f64,
-) -> f64 {
+) {
     for attempt in 1..=retries {
         if *remaining < EPS || *remaining < MIN_SHARES {
             break;
@@ -422,10 +395,13 @@ async fn sweep(
             Ok(o) => o,
             Err(e) => {
                 let msg = e.to_string().to_lowercase();
-                if msg.contains("balance") || msg.contains("allowance") {
-                    *remaining = exec.token_holdings(&job.token).await;
-                } else if msg.contains("minimum") || msg.contains("too small") {
+                if msg.contains("balance") || msg.contains("not enough") || msg.contains("insufficient") {
+                    // The exchange says we don't hold these shares — they're already
+                    // sold (fills landed). We're flat; stop. (No /positions read.)
+                    *remaining = 0.0;
                     break;
+                } else if msg.contains("minimum") || msg.contains("too small") {
+                    break; // dust below the min — can't sell it, leave it
                 } else {
                     warn!("🤝 sell-with-target: {} sweep {}/{} sell errored ({e}) - retry", lbl, attempt, retries);
                 }
@@ -435,10 +411,10 @@ async fn sweep(
         };
         sleep(Duration::from_millis(1000)).await;
         let matched = exec.order_matched(&oid).await.unwrap_or(0.0);
-        if !exec.cancel_confirmed(&oid, &job.token).await {
-            *remaining = exec.token_holdings(&job.token).await;
-            continue;
-        }
+        // Cancel the unfilled remainder (best-effort). If a stray remnant lingers and
+        // later fills, that still just sells what we wanted — so don't gate on it,
+        // and never fall back to a /positions read.
+        let _ = exec.cancel_confirmed(&oid, &job.token).await;
         *remaining = (*remaining - matched).max(0.0);
         if matched > EPS {
             store.record_trade(TradeLog {
@@ -451,9 +427,12 @@ async fn sweep(
                 status: "FILLED".into(),
             });
             info!("🤝 sell-with-target: {} sweep {}/{}: sold {:.2} sh near bid {:.4} ({:.2} to go)", lbl, attempt, retries, matched, bid, *remaining);
+        } else {
+            // Nothing filled this pass (bid moved / thin book) — brief backoff, then
+            // retry against a freshly-read bid.
+            sleep(Duration::from_millis(400)).await;
         }
     }
-    exec.token_holdings(&job.token).await
 }
 
 fn now_str() -> String {
