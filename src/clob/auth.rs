@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE;
 use base64::Engine;
-use ethers_core::types::Address;
 use ethers_core::utils::to_checksum;
 use ethers_signers::{LocalWallet, Signer};
 use hmac::{Hmac, Mac};
@@ -56,24 +55,17 @@ pub async fn create_or_derive(
     client: &reqwest::Client,
     wallet: &LocalWallet,
 ) -> anyhow::Result<ApiCreds> {
-    // POLY_1271 deposit wallets (sig type 3) bind the API key to the DEPOSIT WALLET
-    // (== the order's signer, which the CLOB requires), so POLY_ADDRESS + the
-    // ClobAuth `address` field are the funder and the ClobAuth is ERC-7739/1271
-    // wrapped (the deposit wallet's isValidSignature validates it). Types 0/1/2 sign
-    // a plain ClobAuth with the EOA. Either way POLY_ADDRESS is EIP-55 checksummed.
+    // L1 derive is PLAIN EOA for ALL signature types — including POLY_1271 deposit
+    // wallets (sig type 3). The CLOB /auth endpoint does plain ECDSA recovery (no
+    // ERC-1271 validation: py-clob-client-v2#76, and confirmed by the official py-sdk
+    // / rs-clob-client-v2, which sign a bare ClobAuth with POLY_ADDRESS = the EOA for
+    // every type). The derived key binds to the EOA by design; the deposit wallet
+    // enters only via the order signature. POLY_ADDRESS = the signing EOA, checksummed.
     let ts = now_secs();
     let nonce = 0u64;
-    let (auth_addr, sig) = if cfg.signature_type == 3 {
-        let funder: Address = cfg
-            .funder_address
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid FUNDER_ADDRESS for sig type 3: {e}"))?;
-        (funder, signing::sign_clob_auth_1271(wallet, funder, ts, nonce, cfg.chain_id)?)
-    } else {
-        let eoa = wallet.address();
-        (eoa, signing::sign_clob_auth(wallet, eoa, ts, nonce, cfg.chain_id)?)
-    };
-    let addr_hex = to_checksum(&auth_addr, None);
+    let eoa = wallet.address();
+    let sig = signing::sign_clob_auth(wallet, eoa, ts, nonce, cfg.chain_id)?;
+    let addr_hex = to_checksum(&eoa, None);
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)

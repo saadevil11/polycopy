@@ -133,15 +133,15 @@ impl Executor {
         }
     }
 
-    /// POLY_ADDRESS for the L2 auth headers: the deposit wallet (funder) for sig
-    /// type 3 (POLY_1271), where order.signer == api-key address == funder;
-    /// otherwise the signing EOA. Must match how the API key was derived (auth.rs).
+    /// POLY_ADDRESS for the L2 auth headers: ALWAYS the signing EOA, for every
+    /// signature type. The CLOB API key binds to the EOA — the /auth endpoint does
+    /// plain ECDSA recovery (no ERC-1271 path), so the key is EOA-owned by design.
+    /// The deposit wallet (funder) enters ONLY via the order signature (maker ==
+    /// signer == funder, sig type 3, ERC-7739 wrapped); the CLOB validates that
+    /// separately and does NOT require order.signer == api-key address. This matches
+    /// every official SDK (py-clob-client-v2, py-sdk, rs-clob-client-v2).
     fn poly_address(&self) -> &str {
-        if self.sig_type == signing::SIG_TYPE_POLY_1271 {
-            &self.funder_checksum
-        } else {
-            &self.signer_checksum
-        }
+        &self.signer_checksum
     }
 
     // ── copytrader execution API (token-id based; reuses validated signing) ──

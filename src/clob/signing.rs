@@ -34,8 +34,6 @@ pub const SIG_TYPE_POLY_1271: u8 = 3;
 // Solady ERC-7739 "TypedDataSign" wrapper — POLY_1271 / deposit wallets (sig type
 // 3). The full prefix is concatenated with ORDER_TYPE_STRING (no separator).
 const SOLADY_TYPE_PREFIX: &str = "TypedDataSign(Order contents,string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)";
-// Same wrapper for the L1 ClobAuth message (contents type "ClobAuth" not "Order").
-const SOLADY_TYPE_PREFIX_CLOBAUTH: &str = "TypedDataSign(ClobAuth contents,string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)";
 const DEPOSIT_WALLET_NAME: &str = "DepositWallet";
 const DEPOSIT_WALLET_VERSION: &str = "1";
 
@@ -306,68 +304,6 @@ pub fn sign_clob_auth(
     let digest = eip712_digest(clob_auth_domain_separator(chain_id), struct_hash);
     let sig: Signature = wallet.sign_hash(H256::from(digest))?;
     Ok(format!("0x{}", hex::encode(sig.to_vec())))
-}
-
-/// L1 ClobAuth signature for a POLY_1271 deposit wallet (sig type 3).
-///
-/// This is `sign_order_1271`'s Solady ERC-7739 nested ("TypedDataSign") wrapping
-/// applied to the ClobAuth message instead of an Order: the ClobAuth struct (with
-/// `address` = the deposit wallet) is the `contents`, sealed under the ClobAuth
-/// **app** domain (`ClobAuthDomain`, no verifyingContract), wrapped in the
-/// DepositWallet domain, and raw-ECDSA signed by the controlling EOA — so the
-/// deposit wallet's `isValidSignature` validates the L1 auth and the derived API
-/// key binds to the deposit wallet (== the order's signer). POLY_ADDRESS = funder.
-///
-/// No official SDK implements this (py/ts/rs all sign ClobAuth as a plain EOA —
-/// Polymarket/py-clob-client-v2#70), so unlike `sign_order_1271` there is no
-/// byte-for-byte reference: it mirrors the validated order path exactly and is
-/// confirmed by a successful live key derivation. If the CLOB still rejects it,
-/// supply pre-created creds via CLOB_API_* (see auth::provided_creds).
-pub fn sign_clob_auth_1271(
-    wallet: &LocalWallet,
-    funder: Address,
-    timestamp_secs: u64,
-    nonce: u64,
-    chain_id: u64,
-) -> anyhow::Result<String> {
-    // 1. contents hash = ClobAuth struct hash, with `address` = the deposit wallet.
-    let contents_hash = keccak256(encode(&[
-        Token::FixedBytes(ks(CLOB_AUTH_STRUCT_TYPE).to_vec()),
-        Token::Address(funder),
-        Token::FixedBytes(ks(&timestamp_secs.to_string()).to_vec()),
-        Token::Uint(U256::from(nonce)),
-        Token::FixedBytes(ks(CLOB_AUTH_MSG).to_vec()),
-    ]));
-    // 2. App domain separator = ClobAuthDomain (no verifyingContract).
-    let app_sep = clob_auth_domain_separator(chain_id);
-    // 3. TypedDataSign struct hash, carrying the DepositWallet domain fields.
-    let solady_type_hash = {
-        let mut s = String::from(SOLADY_TYPE_PREFIX_CLOBAUTH);
-        s.push_str(CLOB_AUTH_STRUCT_TYPE);
-        keccak256(s.as_bytes())
-    };
-    let tds_hash = keccak256(encode(&[
-        Token::FixedBytes(solady_type_hash.to_vec()),
-        Token::FixedBytes(contents_hash.to_vec()),
-        Token::FixedBytes(ks(DEPOSIT_WALLET_NAME).to_vec()),
-        Token::FixedBytes(ks(DEPOSIT_WALLET_VERSION).to_vec()),
-        Token::Uint(U256::from(chain_id)),
-        Token::Address(funder), // deposit wallet = the 1271 verifying contract
-        Token::FixedBytes(vec![0u8; 32]), // DepositWallet domain salt = bytes32(0)
-    ]));
-    // 4. Final digest: keccak(0x1901 || app_domain_separator || tds_hash).
-    let digest = eip712_digest(app_sep, tds_hash);
-    // 5. Raw-hash ECDSA sign with the controlling EOA (v in {27,28}).
-    let sig: Signature = wallet.sign_hash(H256::from(digest))?;
-    // 6. Append the Solady ERC-7739 suffix.
-    let type_str = CLOB_AUTH_STRUCT_TYPE.as_bytes();
-    let mut out = Vec::with_capacity(65 + 32 + 32 + type_str.len() + 2);
-    out.extend_from_slice(&sig.to_vec()); // 65: r || s || v
-    out.extend_from_slice(&app_sep); // 32: app domain separator
-    out.extend_from_slice(&contents_hash); // 32: ClobAuth contents hash
-    out.extend_from_slice(type_str); // N: CLOB_AUTH_STRUCT_TYPE (ASCII)
-    out.extend_from_slice(&(type_str.len() as u16).to_be_bytes()); // 2: uint16 big-endian
-    Ok(format!("0x{}", hex::encode(out)))
 }
 
 /// Generate a salt the same way as py-clob-client-v2: floor(rand[0,1) * now_ms).

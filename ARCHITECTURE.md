@@ -99,6 +99,15 @@ probes. The Rust signing is **byte-for-byte validated** against it (see §6).
   ORDER_TYPE_STRING‖uint16(len)`. Implemented in `sign_order_1271`; **validated
   byte-for-byte vs py-clob-client-v2** (`cargo test poly_1271…`). L1/L2 auth is
   unchanged (POLY_ADDRESS = EOA).
+  > ⚠️ The 1271 wrap is for the **order signature ONLY**. **Do NOT** apply it (or
+  > set POLY_ADDRESS = funder) to L1/L2 auth: the CLOB `/auth` endpoint does plain
+  > ECDSA recovery — there is **no** ERC-1271 path for auth (py-clob-client-v2#76).
+  > For **every** sig type the API key derives + binds to the **EOA** (plain
+  > `ClobAuth`, POLY_ADDRESS = EOA); the deposit wallet appears only in the order
+  > (maker = signer = funder). The CLOB does **not** require `order.signer ==
+  > api-key address` — an EOA-bound key trading a sig-type-3 order is the supported
+  > path (verified against the official `polymarket-client` / `py-sdk`). Optionally
+  > skip derivation with pre-created `CLOB_API_*` creds (`auth::provided_creds`).
 - BUY=0 / SELL=1; `timestamp` = ms; `salt = floor(rand()*now_ms)`.
 - **Amounts:** `buy_amounts`/`sell_amounts` pick `ROUNDING_CONFIG` by tick;
   6-dp token decimals. `expiration` ("0" = GTC) goes in the POST body but NOT the
