@@ -273,6 +273,50 @@ impl Executor {
         self.place_gtc(token_id, neg_risk, signing::SIDE_SELL, sweep, size, tick).await
     }
 
+    /// Marketable BUY price: `ahead` above the best ask, capped just below 1.0. A buy
+    /// limit at this price crosses the ask side and fills NOW (a limit at the target's
+    /// stale price rarely fills — the book has moved up). Returned (not placed) so the
+    /// caller can persist it crash-safely before placing.
+    pub async fn marketable_buy_price(&self, token_id: &str, ahead: f64, tick: f64) -> f64 {
+        let tick = if tick > 0.0 { tick } else { 0.01 };
+        let (_, ask) = self.book(token_id).await;
+        let cap = signing::snap_price((1.0 - tick).max(tick), tick); // e.g. 0.99
+        let raw = if ask > 0.0 { ask + ahead } else { cap };
+        signing::snap_price(raw.max(tick), tick).min(cap)
+    }
+
+    /// Our VOLUME-WEIGHTED average BUY price for a token, from our own fills
+    /// (`GET /data/trades` — the trade feed, lag-free; NOT the /positions snapshot).
+    /// This is our true cost basis after a market buy. None if we have no buy fills yet.
+    pub async fn avg_buy_price(&self, token_id: &str) -> Option<f64> {
+        let ts = auth::now_secs();
+        let headers = auth::l2_headers(&self.creds, self.poly_address(), ts, "GET", "/data/trades", None).ok()?;
+        let mut rb = self
+            .client
+            .get(format!("{}/data/trades?asset_id={}&next_cursor=MA==", self.clob_url, token_id));
+        for (k, v) in headers {
+            rb = rb.header(k, v);
+        }
+        let v: Value = rb.send().await.ok()?.json().await.ok()?;
+        let data = v.get("data").and_then(|d| d.as_array())?;
+        let (mut notional, mut shares) = (0.0_f64, 0.0_f64);
+        for tr in data {
+            if tr.get("side").and_then(|x| x.as_str()).map(|s| s.to_uppercase()) != Some("BUY".into()) {
+                continue;
+            }
+            let (price, size) = (num(tr, "price"), num(tr, "size"));
+            if price > 0.0 && size > 0.0 {
+                notional += price * size;
+                shares += size;
+            }
+        }
+        if shares > 0.0 {
+            Some(notional / shares)
+        } else {
+            None
+        }
+    }
+
     /// Matched (filled) share count for an order id. `GET /data/order/{id}`.
     pub async fn order_matched(&self, order_id: &str) -> Option<f64> {
         let path = format!("/data/order/{order_id}");

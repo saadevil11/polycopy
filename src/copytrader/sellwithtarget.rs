@@ -87,8 +87,8 @@ impl SellWithTarget {
         let mut st = self.load().await;
         let mut tick = interval(self.cfg.sell_with_target_reconcile);
         info!(
-            "🤝 sell-with-target: {} shares/market at the target's price. On the target's sell — if they sold ABOVE our entry (profit) we CHASE THE BID for good fills; if AT/BELOW entry we DUMP via a GTC sell @ {:.2}. Non-blocking workers, retries={}",
-            self.cfg.sell_with_target_trade_size_shares, self.cfg.sell_with_target_exit_price, self.cfg.sell_with_target_market_sell_retries
+            "🤝 sell-with-target: MARKET-buy {} shares/market (cross ask+{:.2}). On the target's sell — vs our avg cost: AT/ABOVE → CHASE THE BID for good fills; BELOW → DUMP via a GTC sell @ {:.2}. Non-blocking workers, retries={}",
+            self.cfg.sell_with_target_trade_size_shares, self.cfg.sell_with_target_buy_ahead, self.cfg.sell_with_target_exit_price, self.cfg.sell_with_target_market_sell_retries
         );
         loop {
             tokio::select! {
@@ -176,9 +176,14 @@ impl SellWithTarget {
         st.entered.insert(market.clone());
 
         let tick = self.exec.tick_size(&t.token_id).await;
-        let buy_price = snap_price(t.price, tick);
+        // MARKET buy: cross the asks so we actually fill — a limit at the target's
+        // now-stale price rarely fills because the book has already moved up. buy_price
+        // is the marketable cross price (best ask + buy_ahead, capped < 1.0); our TRUE
+        // average cost is read from our fills at exit (avg_buy_price), this is only the
+        // fallback + the price find_order matches a resting remainder against.
+        let buy_price = self.exec.marketable_buy_price(&t.token_id, self.cfg.sell_with_target_buy_ahead, tick).await;
         if buy_price <= 0.0 || buy_price >= 1.0 {
-            warn!("🤝 sell-with-target: target price {:.4} not placeable in {} — skipping", t.price, label(&t.title, &t.outcome, &market));
+            warn!("🤝 sell-with-target: no placeable buy price for {} — skipping", label(&t.title, &t.outcome, &market));
             st.entered.remove(&market);
             return;
         }
@@ -198,7 +203,7 @@ impl SellWithTarget {
                 order_id: String::new(),
             },
         );
-        info!("🤝 sell-with-target: target BOUGHT {} @ {:.4} ({:.0} sh) → placing {} sh buy @ {:.4}, will sell WITH the target", label(&t.title, &t.outcome, &market), t.price, t.size, size, buy_price);
+        info!("🤝 sell-with-target: target BOUGHT {} @ {:.4} ({:.0} sh) → MARKET buy {} sh (cross up to @ {:.4}), will sell WITH the target", label(&t.title, &t.outcome, &market), t.price, t.size, size, buy_price);
 
         let mut pos = Pos {
             market_id: market.clone(),
@@ -249,11 +254,14 @@ impl SellWithTarget {
             Some(p) if p.status == "ACTIVE" => p.clone(),
             _ => return,
         };
-        // Above our entry = profit → chase the bid for a good fill. At/below entry =
-        // loss/break-even → dump at the floor to exit fast (rejection-proof).
-        let profit = t.price > pos.buy_price;
-        let how = if profit { "profit: bid-chase" } else { "loss/even: floor dump" };
-        info!("🤝 sell-with-target: target SOLD {} @ {:.4} (our entry {:.4}) — exiting WITH them [{}]", label(&t.title, &t.outcome, &market), t.price, pos.buy_price, how);
+        // Our TRUE average cost from our own fills (lag-free trade feed); fall back to
+        // the placed price if the fills aren't visible yet. Target sold AT/ABOVE our
+        // cost → profit → chase the bid for a good fill; BELOW our cost → loss → dump
+        // at the floor to exit fast (rejection-proof on a falling book).
+        let avg_cost = self.exec.avg_buy_price(&pos.token_id).await.unwrap_or(pos.buy_price);
+        let profit = t.price >= avg_cost;
+        let how = if profit { "≥ our cost → bid-chase" } else { "< our cost → floor dump" };
+        info!("🤝 sell-with-target: target SOLD {} @ {:.4} (our avg cost {:.4}) — exiting WITH them [{}]", label(&t.title, &t.outcome, &market), t.price, avg_cost, how);
         self.begin_exit(st, &mut pos, profit).await;
     }
 
