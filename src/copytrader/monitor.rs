@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
+use crate::copytrader::ninetynine::slug_allowed;
 use crate::copytrader::store::Store;
 use crate::copytrader::{Side, TargetTrade};
 
@@ -20,14 +21,14 @@ use crate::copytrader::{Side, TargetTrade};
 /// poll), but Polymarket rate-limits this socket (HTTP 429) on datacenter IPs -
 /// it only connects reliably from a residential/allowed IP. On repeated failure
 /// it just keeps retrying (set DATA_SOURCE=rest to use polling instead).
-pub async fn run_ws(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
+pub async fn run_ws(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>, filter: Vec<String>) {
     if cfg.target_trader.is_empty() {
         warn!("copytrader ws monitor: TARGET_TRADER_ADDRESS not set — idle");
         return;
     }
     let mut backoff = 2u64;
     loop {
-        match ws_session(&cfg, &store, &tx).await {
+        match ws_session(&cfg, &store, &tx, &filter).await {
             Ok(_) => backoff = 2,
             Err(e) => {
                 warn!("copytrader ws session ended ({e}); reconnecting in {backoff}s (if this is a 429, your IP is rate-limited — use DATA_SOURCE=rest)");
@@ -38,7 +39,7 @@ pub async fn run_ws(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
     }
 }
 
-async fn ws_session(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>) -> anyhow::Result<()> {
+async fn ws_session(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>, filter: &[String]) -> anyhow::Result<()> {
     // Browser-like headers so Cloudflare lets the handshake reach the app.
     let mut req = cfg.data_ws_url.as_str().into_client_request()?;
     req.headers_mut().insert("Origin", "https://polymarket.com".parse()?);
@@ -57,9 +58,9 @@ async fn ws_session(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>) 
     loop {
         tokio::select! {
             msg = read.next() => match msg {
-                Some(Ok(Message::Text(t))) => handle_ws_frame(cfg, store, tx, &t).await,
+                Some(Ok(Message::Text(t))) => handle_ws_frame(cfg, store, tx, filter, &t).await,
                 Some(Ok(Message::Binary(b))) => {
-                    if let Ok(t) = String::from_utf8(b) { handle_ws_frame(cfg, store, tx, &t).await; }
+                    if let Ok(t) = String::from_utf8(b) { handle_ws_frame(cfg, store, tx, filter, &t).await; }
                 }
                 Some(Ok(Message::Ping(p))) => { let _ = write.send(Message::Pong(p)).await; }
                 Some(Ok(_)) => {}
@@ -73,7 +74,7 @@ async fn ws_session(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>) 
     }
 }
 
-async fn handle_ws_frame(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>, text: &str) {
+async fn handle_ws_frame(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTrade>, filter: &[String], text: &str) {
     let t = text.trim();
     if t.is_empty() || t == "PONG" || t == "ping" {
         return;
@@ -103,12 +104,15 @@ async fn handle_ws_frame(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTra
     }
     store.mark_seen(&id);
     if let Some(trade) = parse_trade(payload) {
+        if !slug_allowed(&trade.slug, filter) {
+            return; // not a market this bot trades — don't log or dispatch
+        }
         info!("👁  target {}", trade_line(&trade));
         let _ = tx.send(trade).await;
     }
 }
 
-pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
+pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>, filter: Vec<String>) {
     if cfg.target_trader.is_empty() {
         warn!("copytrader monitor: TARGET_TRADER_ADDRESS not set — monitor idle");
         return;
@@ -149,6 +153,9 @@ pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>) {
             }
             store.mark_seen(&id);
             if let Some(t) = parse_trade(it) {
+                if !slug_allowed(&t.slug, &filter) {
+                    continue; // not a market this bot trades — don't log or dispatch
+                }
                 info!("👁  target {}", trade_line(&t));
                 let _ = tx.send(t).await;
             }

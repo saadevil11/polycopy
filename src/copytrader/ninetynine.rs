@@ -282,8 +282,9 @@ fn now_ms() -> u64 {
 }
 
 /// True if the market's slug is one of the allowed `<asset>-updown-5m-*` markets.
-/// Empty `assets` = no filter (copy everything).
-fn slug_allowed(slug: &str, assets: &[String]) -> bool {
+/// Empty `assets` = no filter (copy everything). Shared with the monitor so it can
+/// drop (and not log) non-matching markets before they ever reach the strategy.
+pub(crate) fn slug_allowed(slug: &str, assets: &[String]) -> bool {
     if assets.is_empty() {
         return true;
     }

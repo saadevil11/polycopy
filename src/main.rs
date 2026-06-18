@@ -53,16 +53,19 @@ async fn main() -> Result<()> {
     let data_dir = std::env::var("COPY_DATA_DIR").unwrap_or_else(|_| "./data".into());
     let store = Arc::new(copytrader::store::Store::open(&data_dir));
     let (tx, rx) = tokio::sync::mpsc::channel(256);
+    // 99c restricts to its asset list; pass it to the monitor so non-matching
+    // markets are dropped before logging/dispatch (cleaner logs, less work).
+    let log_filter = if cfg.ninetynine_enabled { cfg.ninetynine_assets.clone() } else { Vec::new() };
     // DATA_SOURCE=ws -> activity WebSocket (faster, but 429s on datacenter
     // IPs); DATA_SOURCE=rest -> Data-API polling (reliable on AWS).
     match cfg.data_source {
         DataSource::Ws => {
             tracing::info!("monitor: WebSocket (DATA_SOURCE=ws)");
-            tokio::spawn(copytrader::monitor::run_ws(cfg.clone(), store.clone(), tx));
+            tokio::spawn(copytrader::monitor::run_ws(cfg.clone(), store.clone(), tx, log_filter));
         }
         DataSource::Rest => {
             tracing::info!("monitor: REST polling (DATA_SOURCE=rest)");
-            tokio::spawn(copytrader::monitor::run(cfg.clone(), store.clone(), tx));
+            tokio::spawn(copytrader::monitor::run(cfg.clone(), store.clone(), tx, log_filter));
         }
     }
 
