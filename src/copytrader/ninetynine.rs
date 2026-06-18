@@ -68,6 +68,11 @@ impl NinetyNine {
                 None => "off".into(),
             }
         );
+        if self.cfg.ninetynine_assets.is_empty() {
+            info!("💯 99c: market filter OFF — copying the target's buys in ALL markets");
+        } else {
+            info!("💯 99c: market filter — only {}-updown-5m markets", self.cfg.ninetynine_assets.join("/"));
+        }
         loop {
             tokio::select! {
                 maybe = rx.recv() => match maybe {
@@ -123,6 +128,15 @@ impl NinetyNine {
     async fn on_buy(&self, st: &mut State, t: TargetTrade) {
         let market = t.market_id.clone();
         if market.is_empty() || t.token_id.is_empty() {
+            return;
+        }
+        // Market filter: only the configured `<asset>-updown-5m-*` markets.
+        if !slug_allowed(&t.slug, &self.cfg.ninetynine_assets) {
+            if t.slug.is_empty() {
+                warn!("💯 99c: target buy in {} has no slug — can't match the asset filter, skipping", label(&t.title, &t.outcome, &market));
+            } else {
+                info!("💯 99c: ignoring {} — slug '{}' not in the allowed assets", label(&t.title, &t.outcome, &market), t.slug);
+            }
             return;
         }
         if st.entered.contains(&market) || st.positions.contains_key(&market) {
@@ -265,6 +279,38 @@ impl NinetyNine {
 /// Wall-clock milliseconds (persisted so the stale-cancel window survives restarts).
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+/// True if the market's slug is one of the allowed `<asset>-updown-5m-*` markets.
+/// Empty `assets` = no filter (copy everything).
+fn slug_allowed(slug: &str, assets: &[String]) -> bool {
+    if assets.is_empty() {
+        return true;
+    }
+    let s = slug.to_lowercase();
+    assets.iter().any(|a| s.starts_with(&format!("{a}-updown-5m")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slug_allowed;
+
+    fn assets() -> Vec<String> {
+        ["btc", "eth", "xrp", "doge", "bnb", "hype"].iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn filter_matches_only_listed_5m_markets() {
+        let a = assets();
+        assert!(slug_allowed("btc-updown-5m-1781742900", &a));
+        assert!(slug_allowed("eth-updown-5m-1781742900", &a));
+        assert!(slug_allowed("hype-updown-5m-1", &a));
+        assert!(!slug_allowed("sol-updown-5m-1", &a)); // sol not in the list
+        assert!(!slug_allowed("btc-updown-1h-1", &a)); // hourly, not 5m
+        assert!(!slug_allowed("will-trump-win-2024", &a));
+        assert!(!slug_allowed("", &a)); // unknown slug never matches when filtered
+        assert!(slug_allowed("anything-at-all", &[])); // empty filter = allow all
+    }
 }
 
 fn short(s: &str) -> &str {

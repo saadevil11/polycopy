@@ -37,4 +37,5 @@ pub struct TargetTrade {
     pub size: f64,
     pub title: String,  // human-readable market name
     pub outcome: String, // outcome bought/sold, e.g. "Yes" / "No"
+    pub slug: String,    // market/event slug, e.g. "btc-updown-5m-1781699700"
 }

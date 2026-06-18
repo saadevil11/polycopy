@@ -41,6 +41,8 @@ pub struct Config {
     pub ninetynine_trade_size_shares: f64,
     pub ninetynine_reconcile: Duration,
     pub ninetynine_buy_max_age: Option<Duration>, // cancel an unfilled buy after this (None = never)
+    /// Only copy `<asset>-updown-5m-*` markets for these assets (empty = no filter).
+    pub ninetynine_assets: Vec<String>,
 
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
@@ -97,6 +99,14 @@ fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
 }
 
+fn env_list(key: &str, default: &str) -> Vec<String> {
+    env_str(key, default)
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 impl Config {
     pub fn from_env() -> Result<Self> {
         let _ = dotenvy::dotenv();
@@ -148,6 +158,7 @@ impl Config {
                 0 => None,
                 s => Some(Duration::from_secs(s)),
             },
+            ninetynine_assets: env_list("NINETYNINE_ASSETS", ""),
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),

@@ -201,6 +201,12 @@ fn parse_trade(it: &Value) -> Option<TargetTrade> {
         size: num(it, "size"),
         title: it.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         outcome: it.get("outcome").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        slug: it
+            .get("slug")
+            .or_else(|| it.get("eventSlug"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
