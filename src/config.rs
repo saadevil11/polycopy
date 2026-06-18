@@ -57,6 +57,11 @@ pub struct Config {
     pub sell_with_target_trade_size_shares: f64,
     pub sell_with_target_reconcile: Duration,
     pub sell_with_target_market_sell_retries: u32,
+    /// Exit = one GTC SELL limit at THIS price for all our shares. Priced low so it's
+    /// marketable: it fills against every bid from the top down to this floor (e.g.
+    /// 0.50, 0.49, …, 0.10), resting any remainder here. Not a "market order" (those
+    /// get rejected on a moving book) — a plain limit the exchange accepts.
+    pub sell_with_target_exit_price: f64,
 
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
@@ -181,6 +186,7 @@ impl Config {
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
             sell_with_target_market_sell_retries: env_u64("SELL_WITH_TARGET_MARKET_SELL_RETRIES", 8) as u32,
+            sell_with_target_exit_price: env_f64("SELL_WITH_TARGET_EXIT_PRICE", 0.10),
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),

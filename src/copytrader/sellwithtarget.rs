@@ -26,7 +26,7 @@ use tokio::time::{interval, sleep};
 use tracing::{info, warn};
 
 use crate::clob::executor::Executor;
-use crate::clob::signing::{snap_price, SIDE_BUY};
+use crate::clob::signing::{snap_price, SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
 use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
 use crate::copytrader::{Side, TargetTrade};
@@ -83,8 +83,8 @@ impl SellWithTarget {
         let mut st = self.load().await;
         let mut tick = interval(self.cfg.sell_with_target_reconcile);
         info!(
-            "🤝 sell-with-target: {} shares/market at the target's price; market-sell ALL on the target's sell (non-blocking workers). retries={}",
-            self.cfg.sell_with_target_trade_size_shares, self.cfg.sell_with_target_market_sell_retries
+            "🤝 sell-with-target: {} shares/market at the target's price; on the target's sell, place ONE GTC sell of all shares @ {:.2} (marketable — sweeps the book down to the floor, rests remainder there). non-blocking workers, placement retries={}",
+            self.cfg.sell_with_target_trade_size_shares, self.cfg.sell_with_target_exit_price, self.cfg.sell_with_target_market_sell_retries
         );
         loop {
             tokio::select! {
@@ -305,10 +305,11 @@ impl SellWithTarget {
         let store = self.store.clone();
         let sem = self.sem.clone();
         let retries = self.cfg.sell_with_target_market_sell_retries;
+        let exit_price = self.cfg.sell_with_target_exit_price;
         tokio::spawn(async move {
             let market = job.market.clone();
             let store2 = store.clone();
-            let outcome = std::panic::AssertUnwindSafe(exit_worker(exec, store, sem, retries, job))
+            let outcome = std::panic::AssertUnwindSafe(exit_worker(exec, store, sem, retries, exit_price, job))
                 .catch_unwind()
                 .await;
             if outcome.is_err() {
@@ -338,101 +339,70 @@ impl SellWithTarget {
     }
 }
 
-/// Detached worker: market-sell the position, then a MANDATORY final holdings
-/// check to catch any fill that landed after handoff (cancel/order_matched race),
-/// so we truly sell ALL. Bounded by the shared semaphore.
-async fn exit_worker(exec: Arc<Executor>, store: Arc<Store>, sem: Arc<Semaphore>, retries: u32, job: ExitJob) {
+/// Detached worker: place ONE GTC SELL limit for our whole position at the exit
+/// FLOOR price. Priced low (e.g. 0.10) so it's MARKETABLE — the matching engine
+/// crosses the bids from the top down (filling at 0.50, 0.49, … at the BID prices,
+/// not the floor) and rests any unfilled remainder at the floor until a bid returns
+/// or the market resolves. This is a plain limit order the exchange accepts; we do
+/// NOT chase the bid / send a "market" order (those get rejected on a fast-moving
+/// book). Size + fills are all from CLOB order data — never the laggy /positions.
+/// Bounded by the shared semaphore.
+async fn exit_worker(
+    exec: Arc<Executor>,
+    store: Arc<Store>,
+    sem: Arc<Semaphore>,
+    retries: u32,
+    exit_price: f64,
+    job: ExitJob,
+) {
     let _permit = match sem.acquire_owned().await {
         Ok(p) => p,
         Err(_) => return,
     };
     let lbl = label(&job.title, &job.outcome, &job.market);
-    info!("🤝 sell-with-target: exiting {} — selling up to {:.2} sh", lbl, job.known_shares);
-
-    // Sweep the bid side until we've sold the whole (order-confirmed) position or
-    // the book runs out of bids. `remaining` is tracked from the SELL orders' real
-    // fills (order_matched) — NEVER from the laggy Data-API /positions — so a fill
-    // is never double-counted and we never falsely think shares remain. The buy was
-    // already cancelled + its final fill read in begin_exit, so no late fill can
-    // land after handoff (the old mandatory /positions re-sweep is gone).
-    let mut remaining = job.known_shares;
-    sweep(&exec, &store, &job, &lbl, retries, &mut remaining).await;
-
-    if remaining < MIN_SHARES {
+    let size = job.known_shares;
+    if size < MIN_SHARES {
         store.update_swt_status(&job.market, "DONE");
-        info!("🤝 sell-with-target: exit complete for {} ✅ ({:.2} sh left)", lbl, remaining);
-    } else {
-        store.update_swt_status(&job.market, "STUCK");
-        warn!("⛔ sell-with-target: sold all the book would take, {:.2} sh still remain in {} (no more bids) — MANUAL ACTION NEEDED", remaining, lbl);
+        info!("🤝 sell-with-target: nothing to sell in {} ({:.2} sh) — done", lbl, size);
+        return;
     }
-}
+    info!("🤝 sell-with-target: exiting {} — placing GTC sell of {:.2} sh @ {:.2} (marketable: fills every bid from the top down to {:.2})", lbl, size, exit_price, exit_price);
 
-/// One market-sell pass: walk the book, retrying, tracking `remaining` purely from
-/// the SELL orders' real fills (`order_matched`, authoritative CLOB order data) —
-/// NEVER from the lagging Data-API /positions. The exchange caps at our real
-/// balance so it can't over-sell; we decrement only by what actually matched, so
-/// it can't double-sell. Records each fill. `remaining` is the out-value the caller
-/// uses to decide DONE vs STUCK.
-async fn sweep(
-    exec: &Arc<Executor>,
-    store: &Arc<Store>,
-    job: &ExitJob,
-    lbl: &str,
-    retries: u32,
-    remaining: &mut f64,
-) {
-    for attempt in 1..=retries {
-        if *remaining < EPS || *remaining < MIN_SHARES {
-            break;
-        }
-        let (bid, _) = exec.book(&job.token).await;
-        if bid <= 0.0 {
-            warn!("🤝 sell-with-target: {} no bid to sell into — waiting (sweep {}/{})", lbl, attempt, retries);
-            sleep(Duration::from_millis(800)).await;
-            continue;
-        }
-        let oid = match exec.market_sell(&job.token, job.neg_risk, *remaining, bid, job.tick).await {
-            Ok(o) => o,
-            Err(e) => {
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("balance") || msg.contains("not enough") || msg.contains("insufficient") {
-                    // The exchange says we don't hold these shares — they're already
-                    // sold (fills landed). We're flat; stop. (No /positions read.)
-                    *remaining = 0.0;
-                    break;
-                } else if msg.contains("minimum") || msg.contains("too small") {
-                    break; // dust below the min — can't sell it, leave it
-                } else {
-                    warn!("🤝 sell-with-target: {} sweep {}/{} sell errored ({e}) - retry", lbl, attempt, retries);
+    // Retry only the PLACEMENT (transient POST errors). Once the order is live it
+    // does the sweeping itself and rests the remainder — no per-fill retry loop.
+    for attempt in 1..=retries.max(1) {
+        match exec.place_gtc(&job.token, job.neg_risk, SIDE_SELL, exit_price, size, job.tick).await {
+            Ok(oid) => {
+                // Let the marketable order cross, then record what it swept
+                // (authoritative order fill — never /positions).
+                sleep(Duration::from_millis(1500)).await;
+                let filled = exec.order_matched(&oid).await.unwrap_or(0.0);
+                if filled > EPS {
+                    store.record_trade(TradeLog {
+                        time: now_str(),
+                        market: job.market.clone(),
+                        title: job.title.clone(),
+                        side: "SELL".into(),
+                        size: filled,
+                        price: exit_price,
+                        status: "FILLED".into(),
+                    });
                 }
-                sleep(Duration::from_millis(400)).await;
-                continue;
+                store.update_swt_status(&job.market, "DONE");
+                info!(
+                    "🤝 sell-with-target: exit order live for {} ✅ — swept {:.2}/{:.2} sh now; any remainder rests at {:.2} until a bid returns / resolution",
+                    lbl, filled, size, exit_price
+                );
+                return;
             }
-        };
-        sleep(Duration::from_millis(1000)).await;
-        let matched = exec.order_matched(&oid).await.unwrap_or(0.0);
-        // Cancel the unfilled remainder (best-effort). If a stray remnant lingers and
-        // later fills, that still just sells what we wanted — so don't gate on it,
-        // and never fall back to a /positions read.
-        let _ = exec.cancel_confirmed(&oid, &job.token).await;
-        *remaining = (*remaining - matched).max(0.0);
-        if matched > EPS {
-            store.record_trade(TradeLog {
-                time: now_str(),
-                market: job.market.clone(),
-                title: job.title.clone(),
-                side: "SELL".into(),
-                size: matched,
-                price: bid,
-                status: "FILLED".into(),
-            });
-            info!("🤝 sell-with-target: {} sweep {}/{}: sold {:.2} sh near bid {:.4} ({:.2} to go)", lbl, attempt, retries, matched, bid, *remaining);
-        } else {
-            // Nothing filled this pass (bid moved / thin book) — brief backoff, then
-            // retry against a freshly-read bid.
-            sleep(Duration::from_millis(400)).await;
+            Err(e) => {
+                warn!("🤝 sell-with-target: {} exit-sell placement {}/{} errored ({e}) - retry", lbl, attempt, retries.max(1));
+                sleep(Duration::from_millis(500)).await;
+            }
         }
     }
+    store.update_swt_status(&job.market, "STUCK");
+    warn!("⛔ sell-with-target: could NOT place the {:.2} sh exit sell @ {:.2} in {} after {} tries — MANUAL ACTION NEEDED", size, exit_price, lbl, retries.max(1));
 }
 
 fn now_str() -> String {

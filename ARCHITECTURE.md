@@ -28,12 +28,17 @@ Two strategies, selected by env:
   brownfox when both are enabled.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — brownfox's entry (one
   fixed-SHARE buy per market at the target's price) but a different exit: **no +1c
-  resting sell**; on the target's **first sell** in that market (or a holdings
-  backstop for a missed WS event), **market-sell ALL our shares at any price** —
-  exit *with* the target. The market-sell runs on a **detached, semaphore-bounded
-  worker** so it never blocks detection/entry of other markets; lag-safe (sells
-  the order's matched fill + a mandatory final-holdings sweep), retried, restart-
-  safe (EXITING resumes; DONE/ABORTED/STUCK terminal). State in `sellwithtarget.json`.
+  resting sell**; on the target's **first sell** in that market, place **ONE GTC SELL
+  limit of all our shares at `SELL_WITH_TARGET_EXIT_PRICE` (default 0.10)** — it's
+  *marketable* (the engine fills against every bid from the top down — 0.50, 0.49, …
+  — at the bid prices, resting any remainder at the floor), so it clears like a market
+  exit but is a plain limit the CLOB accepts (a bid-chasing "market" order gets
+  rejected on a fast book). Same for profit sells and below-entry sells. Runs on a
+  **detached, semaphore-bounded worker** (never blocks other markets); size + fills
+  come from CLOB order data (`order_matched`), **never the laggy /positions**; the
+  placement is retried; restart-safe (EXITING resumes; DONE/ABORTED/STUCK terminal).
+  A dropped WS sell is caught by the `/activity` safety-net poll (§2), not a
+  /positions backstop. State in `sellwithtarget.json`.
 - **general copy replicator** (`USE_BROWNFOX_MODE=false`) — copy the target's
   buys/sells **proportionally** (`COPY_PERCENTAGE`): buys via optional weather
   price-chasing (or a GTC at their price), sells **capped at our holdings**
