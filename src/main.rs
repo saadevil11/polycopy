@@ -57,7 +57,10 @@ async fn main() -> Result<()> {
         // watches the 5m order books directly and buys at 0.99 when the ask hits it.
         match executor.clone() {
             Some(exec) => {
-                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone());
+                // Liquidity-level filter (Binance 5m/15m/30m) — runs alongside the scanner.
+                let liq = Arc::new(copytrader::liquidity::Liquidity::new(&cfg));
+                tokio::spawn(liq.clone().run());
+                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone(), liq);
                 tokio::spawn(sc.run());
             }
             None => tracing::warn!("99c-scanner needs PRIVATE_KEY/auth — nothing to do"),

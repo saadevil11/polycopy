@@ -36,6 +36,12 @@ Two strategies, selected by env:
   semaphore-bounded placement; fills via `order_matched` (never `/positions`); stale-
   cancel via `NINETYNINE_BUY_MAX_AGE_SECS`; restart-safe; terminal records pruned. Buys
   the same markets as 99c but order-book-driven so it doesn't miss the trader's entries.
+  Optional **liquidity-level avoidance filter** (`SCANNER_LIQUIDITY_FILTER`, `liquidity.rs`,
+  a Rust port of the "Liquidity Levels - Sonarlab" indicator): before a 0.99 buy it checks
+  the coin's price on Binance 5m/15m/30m candles and **skips** the market if price is
+  touching any swing-high/low level (pivots 15L/5R, wick mitigation) on any of those TFs
+  (price at liquidity = reversal risk). Coins with no Binance USDT pair (HYPE) aren't traded
+  while it's on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels
@@ -159,6 +165,7 @@ src/
     ninetynine.rs         99c buy-and-hold: one fixed-share buy/market, hold to resolution
     sellwithtarget.rs     brownfox entry; on target's sell, market-sell all (non-blocking worker)
     scanner.rs            99c order-book scanner: no target; CLOB market WS, buy 0.99 when ask hits it
+    liquidity.rs          Binance 5m/15m/30m swing-level filter (Sonarlab port); skip 0.99 if price at a level
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer
@@ -182,7 +189,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
 `SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
 (0.99), `SCANNER_DISCOVERY_SECS` (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/
-`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`); liquidity filter `SCANNER_LIQUIDITY_FILTER`,
+`SCANNER_LIQ_POLL_SECS`, `BINANCE_REST_URL`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

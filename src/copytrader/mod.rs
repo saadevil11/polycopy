@@ -11,6 +11,7 @@
 pub mod autosell;
 pub mod brownfox;
 pub mod dashboard;
+pub mod liquidity;
 pub mod monitor;
 pub mod ninetynine;
 pub mod replicator;

@@ -63,6 +63,12 @@ pub struct Config {
     pub scanner_buy_price: f64,         // GTC buy limit price (default 0.99)
     pub scanner_trigger_ask: f64,       // fire when best_ask >= this and < 1.0 (default 0.99)
     pub scanner_discovery: Duration,    // Gamma re-discovery cadence (new 5m markets open every 5m)
+    // Liquidity-level avoidance filter: skip a 0.99 buy when the coin's price is
+    // touching a Binance 5m/15m/30m swing level. Coins with no Binance pair (HYPE)
+    // are not traded while this is on.
+    pub scanner_liquidity_filter: bool,
+    pub scanner_liq_poll: Duration,     // Binance kline poll cadence
+    pub binance_rest_url: String,       // swappable if api.binance.com is geo-blocked
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -206,6 +212,9 @@ impl Config {
             scanner_buy_price: env_f64("SCANNER_BUY_PRICE", 0.99),
             scanner_trigger_ask: env_f64("SCANNER_TRIGGER_ASK", 0.99),
             scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
+            scanner_liquidity_filter: env_bool("SCANNER_LIQUIDITY_FILTER", true),
+            scanner_liq_poll: Duration::from_secs(env_u64("SCANNER_LIQ_POLL_SECS", 5).max(2)),
+            binance_rest_url: env_str("BINANCE_REST_URL", "https://api.binance.com"),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),

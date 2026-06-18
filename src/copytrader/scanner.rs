@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::clob::executor::Executor;
 use crate::clob::signing::{snap_price, SIDE_BUY};
 use crate::config::Config;
+use crate::copytrader::liquidity::Liquidity;
 use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
 
 const MIN_SHARES: f64 = 5.0;
@@ -37,6 +38,7 @@ const DEFAULT_ASSETS: [&str; 7] = ["btc", "eth", "sol", "xrp", "bnb", "doge", "h
 
 #[derive(Clone)]
 struct MarketInfo {
+    asset: String, // btc / eth / … (from the slug) — keys the liquidity filter
     title: String,
     outcome: String, // Up / Down
     tick: f64,
@@ -46,16 +48,19 @@ pub struct Scanner {
     cfg: Config,
     exec: Arc<Executor>,
     store: Arc<Store>,
+    liq: Arc<Liquidity>,
     /// token_id -> info for currently-live markets (replaced by the discovery loop).
     markets: Mutex<HashMap<String, MarketInfo>>,
     /// bumped whenever the live token SET changes, so the WS reconnects with it.
     generation: AtomicU64,
+    /// tokens we've already logged a liquidity-skip for (avoids per-update log spam).
+    skip_logged: Mutex<HashSet<String>>,
     sem: Arc<Semaphore>,
     http: reqwest::Client,
 }
 
 impl Scanner {
-    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>) -> Self {
+    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent("polybotshadow/0.1")
@@ -66,8 +71,10 @@ impl Scanner {
             cfg,
             exec,
             store,
+            liq,
             markets: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
+            skip_logged: Mutex::new(HashSet::new()),
             sem: Arc::new(Semaphore::new(permits)),
             http,
         }
@@ -156,6 +163,7 @@ impl Scanner {
                 continue;
             }
             let slug = m.get("slug").and_then(|x| x.as_str()).unwrap_or("");
+            let asset = slug.split('-').next().unwrap_or("").to_string(); // "btc" from "btc-updown-5m-…"
             let title = m.get("question").and_then(|x| x.as_str()).unwrap_or(slug).to_string();
             let tick = m.get("orderPriceMinTickSize").and_then(num_f64).unwrap_or(0.01);
             let toks = str_array(m.get("clobTokenIds")); // ["UpTok","DownTok"]
@@ -167,6 +175,7 @@ impl Scanner {
                 next.insert(
                     tok.clone(),
                     MarketInfo {
+                        asset: asset.clone(),
                         title: title.clone(),
                         outcome: outs.get(i).cloned().unwrap_or_default(),
                         tick,
@@ -308,6 +317,14 @@ impl Scanner {
             Some(i) => i,
             None => return, // not a token we're tracking
         };
+        // Liquidity-level avoidance: skip the 0.99 if the coin's price is touching a
+        // swing high/low on any of the 5m/15m/30m timeframes (reversal risk).
+        if !self.liq.clear_to_trade(&info.asset) {
+            if self.skip_logged.lock().unwrap().insert(token.to_string()) {
+                info!("🔭 99c-scanner: SKIP {} — {} at a liquidity level (5m/15m/30m) or no candle data", label(&info.title, &info.outcome, token), info.asset.to_uppercase());
+            }
+            return;
+        }
         let buy_price = snap_price(self.cfg.scanner_buy_price, info.tick);
         if buy_price <= 0.0 || buy_price >= 1.0 {
             return;
