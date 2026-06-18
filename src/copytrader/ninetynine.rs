@@ -57,7 +57,7 @@ impl NinetyNine {
         if st.cfg.ninetynine_assets.is_empty() {
             info!("💯 99c: market filter OFF — copying the target's buys in ALL markets");
         } else {
-            info!("💯 99c: market filter — only {}-updown-5m markets", st.cfg.ninetynine_assets.join("/"));
+            info!("💯 99c: market filter — only {} updown-5m/15m markets", st.cfg.ninetynine_assets.join("/"));
         }
 
         // Resume any persisted positions up-front (mark filled / stale-cancel).
@@ -261,15 +261,18 @@ fn label(title: &str, outcome: &str, market: &str) -> String {
     }
 }
 
-/// True if the market's slug is one of the allowed `<asset>-updown-5m-*` markets.
-/// Empty `assets` = no filter (copy everything). Shared with the monitor so it can
-/// drop (and not log) non-matching markets before they ever reach the strategy.
+/// True if the market's slug is one of the allowed `<asset>-updown-{5m,15m}-*`
+/// markets (both the 5-minute and 15-minute up/down markets). Empty `assets` = no
+/// filter (copy everything). Shared with the monitor so it can drop (and not log)
+/// non-matching markets before they ever reach the strategy.
 pub(crate) fn slug_allowed(slug: &str, assets: &[String]) -> bool {
     if assets.is_empty() {
         return true;
     }
     let s = slug.to_lowercase();
-    assets.iter().any(|a| s.starts_with(&format!("{a}-updown-5m")))
+    assets.iter().any(|a| {
+        s.starts_with(&format!("{a}-updown-5m")) || s.starts_with(&format!("{a}-updown-15m"))
+    })
 }
 
 #[cfg(test)]
@@ -281,13 +284,15 @@ mod tests {
     }
 
     #[test]
-    fn filter_matches_only_listed_5m_markets() {
+    fn filter_matches_listed_5m_and_15m_markets() {
         let a = assets();
         assert!(slug_allowed("btc-updown-5m-1781742900", &a));
-        assert!(slug_allowed("eth-updown-5m-1781742900", &a));
+        assert!(slug_allowed("btc-updown-15m-1781771400", &a)); // 15-minute now allowed
+        assert!(slug_allowed("eth-updown-15m-1781771400", &a));
         assert!(slug_allowed("hype-updown-5m-1", &a));
-        assert!(!slug_allowed("sol-updown-5m-1", &a)); // sol not in the list
-        assert!(!slug_allowed("btc-updown-1h-1", &a)); // hourly, not 5m
+        assert!(!slug_allowed("sol-updown-5m-1", &a)); // sol not in this test's list
+        assert!(!slug_allowed("btc-updown-1h-1", &a)); // hourly — not 5m/15m
+        assert!(!slug_allowed("btc-updown-1m-1", &a)); // 1-minute — not 5m/15m
         assert!(!slug_allowed("will-trump-win-2024", &a));
         assert!(!slug_allowed("", &a)); // unknown slug never matches when filtered
         assert!(slug_allowed("anything-at-all", &[])); // empty filter = allow all

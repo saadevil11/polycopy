@@ -167,7 +167,7 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `AUTO_SELL_*`; stale `STALE_ORDER_*`. 99c: `USE_99C_MODE`,
 `NINETYNINE_TRADE_SIZE_SHARES`, `NINETYNINE_RECONCILE_MS`,
 `NINETYNINE_BUY_MAX_AGE_SECS`, `NINETYNINE_ASSETS` (only copy
-`<asset>-updown-5m-*` markets; empty = all). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`<asset>-updown-5m-*` and `<asset>-updown-15m-*` markets; empty = all). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run
