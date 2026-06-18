@@ -94,7 +94,7 @@ impl Executor {
         let body_str = serde_json::to_string(&json!({ "orderID": order_id }))?;
         let ts = auth::now_secs();
         let headers =
-            auth::l2_headers(&self.creds, &self.signer_checksum, ts, "DELETE", "/order", Some(&body_str))?;
+            auth::l2_headers(&self.creds, self.poly_address(), ts, "DELETE", "/order", Some(&body_str))?;
         let mut rb = self
             .client
             .delete(format!("{}/order", self.clob_url))
@@ -111,6 +111,17 @@ impl Executor {
             Ok(())
         } else {
             anyhow::bail!("cancel rejected ({status}): {v}")
+        }
+    }
+
+    /// POLY_ADDRESS for the L2 auth headers: the deposit wallet (funder) for sig
+    /// type 3 (POLY_1271), where order.signer == api-key address == funder;
+    /// otherwise the signing EOA. Must match how the API key was derived (auth.rs).
+    fn poly_address(&self) -> &str {
+        if self.sig_type == signing::SIG_TYPE_POLY_1271 {
+            &self.funder_checksum
+        } else {
+            &self.signer_checksum
         }
     }
 
@@ -192,7 +203,7 @@ impl Executor {
         let body_str = serde_json::to_string(&body)?;
         let ts = auth::now_secs();
         let headers =
-            auth::l2_headers(&self.creds, &self.signer_checksum, ts, "POST", "/order", Some(&body_str))?;
+            auth::l2_headers(&self.creds, self.poly_address(), ts, "POST", "/order", Some(&body_str))?;
         let mut rb = self
             .client
             .post(format!("{}/order", self.clob_url))
@@ -247,7 +258,7 @@ impl Executor {
     pub async fn order_matched(&self, order_id: &str) -> Option<f64> {
         let path = format!("/data/order/{order_id}");
         let ts = auth::now_secs();
-        let headers = auth::l2_headers(&self.creds, &self.signer_checksum, ts, "GET", &path, None).ok()?;
+        let headers = auth::l2_headers(&self.creds, self.poly_address(), ts, "GET", &path, None).ok()?;
         let mut rb = self.client.get(format!("{}{}", self.clob_url, path));
         for (k, v) in headers {
             rb = rb.header(k, v);
@@ -259,7 +270,7 @@ impl Executor {
     /// All resting orders for a token: (order_id, side, price, original, matched).
     pub async fn open_orders(&self, token_id: &str) -> Vec<(String, String, f64, f64, f64)> {
         let ts = auth::now_secs();
-        let headers = match auth::l2_headers(&self.creds, &self.signer_checksum, ts, "GET", "/data/orders", None) {
+        let headers = match auth::l2_headers(&self.creds, self.poly_address(), ts, "GET", "/data/orders", None) {
             Ok(h) => h,
             Err(_) => return Vec::new(),
         };
@@ -287,7 +298,7 @@ impl Executor {
     /// All resting orders across all markets: (order_id, token_id, side, price).
     pub async fn all_open_orders(&self) -> Vec<(String, String, String, f64)> {
         let ts = auth::now_secs();
-        let headers = match auth::l2_headers(&self.creds, &self.signer_checksum, ts, "GET", "/data/orders", None) {
+        let headers = match auth::l2_headers(&self.creds, self.poly_address(), ts, "GET", "/data/orders", None) {
             Ok(h) => h,
             Err(_) => return Vec::new(),
         };
