@@ -46,8 +46,11 @@ pub struct Config {
     pub ninetynine_trade_size_shares: f64,
     pub ninetynine_reconcile: Duration,
     pub ninetynine_buy_max_age: Option<Duration>, // cancel an unfilled buy after this (None = never)
-    /// Only copy `<asset>-updown-5m-*` markets for these assets (empty = no filter).
+    /// Only copy `<asset>-updown-<dur>-*` markets for these assets (empty = no filter).
     pub ninetynine_assets: Vec<String>,
+    /// Which up/down market durations to copy, e.g. ["5m","15m"]. Set
+    /// NINETYNINE_DURATIONS=5m to disable 15m (or =15m for only 15m).
+    pub ninetynine_durations: Vec<String>,
     /// Max concurrent 99c buy placements (parallel across markets; bounds 429s).
     pub ninetynine_max_concurrent_buys: usize,
 
@@ -185,6 +188,7 @@ impl Config {
                 s => Some(Duration::from_secs(s)),
             },
             ninetynine_assets: env_list("NINETYNINE_ASSETS", ""),
+            ninetynine_durations: env_list("NINETYNINE_DURATIONS", "5m,15m"),
             ninetynine_max_concurrent_buys: (env_u64("NINETYNINE_MAX_CONCURRENT_BUYS", 8) as usize).max(1),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),

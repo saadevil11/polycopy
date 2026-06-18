@@ -57,7 +57,7 @@ impl NinetyNine {
         if st.cfg.ninetynine_assets.is_empty() {
             info!("💯 99c: market filter OFF — copying the target's buys in ALL markets");
         } else {
-            info!("💯 99c: market filter — only {} updown-5m/15m markets", st.cfg.ninetynine_assets.join("/"));
+            info!("💯 99c: market filter — {} × updown-{} markets", st.cfg.ninetynine_assets.join("/"), st.cfg.ninetynine_durations.join("/"));
         }
 
         // Resume any persisted positions up-front (mark filled / stale-cancel).
@@ -104,7 +104,7 @@ impl NinetyNine {
         }
         // Defense in depth (the monitor already drops non-matching markets when a
         // filter is set).
-        if !slug_allowed(&t.slug, &self.cfg.ninetynine_assets) {
+        if !slug_allowed(&t.slug, &self.cfg.ninetynine_assets, &self.cfg.ninetynine_durations) {
             return;
         }
 
@@ -261,18 +261,18 @@ fn label(title: &str, outcome: &str, market: &str) -> String {
     }
 }
 
-/// True if the market's slug is one of the allowed `<asset>-updown-{5m,15m}-*`
-/// markets (both the 5-minute and 15-minute up/down markets). Empty `assets` = no
-/// filter (copy everything). Shared with the monitor so it can drop (and not log)
-/// non-matching markets before they ever reach the strategy.
-pub(crate) fn slug_allowed(slug: &str, assets: &[String]) -> bool {
+/// True if the market's slug is an allowed `<asset>-updown-<dur>-*` market — for one
+/// of the configured `assets` AND one of the configured `durations` (e.g. "5m",
+/// "15m"). Empty `assets` = no filter (copy everything). Shared with the monitor so it
+/// can drop (and not log) non-matching markets before they reach the strategy.
+pub(crate) fn slug_allowed(slug: &str, assets: &[String], durations: &[String]) -> bool {
     if assets.is_empty() {
         return true;
     }
     let s = slug.to_lowercase();
-    assets.iter().any(|a| {
-        s.starts_with(&format!("{a}-updown-5m")) || s.starts_with(&format!("{a}-updown-15m"))
-    })
+    assets
+        .iter()
+        .any(|a| durations.iter().any(|d| s.starts_with(&format!("{a}-updown-{d}"))))
 }
 
 #[cfg(test)]
@@ -282,19 +282,28 @@ mod tests {
     fn assets() -> Vec<String> {
         ["btc", "eth", "xrp", "doge", "bnb", "hype"].iter().map(|s| s.to_string()).collect()
     }
+    fn durs(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
 
     #[test]
-    fn filter_matches_listed_5m_and_15m_markets() {
+    fn filter_matches_configured_assets_and_durations() {
         let a = assets();
-        assert!(slug_allowed("btc-updown-5m-1781742900", &a));
-        assert!(slug_allowed("btc-updown-15m-1781771400", &a)); // 15-minute now allowed
-        assert!(slug_allowed("eth-updown-15m-1781771400", &a));
-        assert!(slug_allowed("hype-updown-5m-1", &a));
-        assert!(!slug_allowed("sol-updown-5m-1", &a)); // sol not in this test's list
-        assert!(!slug_allowed("btc-updown-1h-1", &a)); // hourly — not 5m/15m
-        assert!(!slug_allowed("btc-updown-1m-1", &a)); // 1-minute — not 5m/15m
-        assert!(!slug_allowed("will-trump-win-2024", &a));
-        assert!(!slug_allowed("", &a)); // unknown slug never matches when filtered
-        assert!(slug_allowed("anything-at-all", &[])); // empty filter = allow all
+        let both = durs(&["5m", "15m"]);
+        assert!(slug_allowed("btc-updown-5m-1781742900", &a, &both));
+        assert!(slug_allowed("btc-updown-15m-1781771400", &a, &both));
+        assert!(slug_allowed("eth-updown-15m-1781771400", &a, &both));
+        assert!(slug_allowed("hype-updown-5m-1", &a, &both));
+        assert!(!slug_allowed("sol-updown-5m-1", &a, &both)); // sol not in this test's list
+        assert!(!slug_allowed("btc-updown-1h-1", &a, &both)); // hourly — not 5m/15m
+        assert!(!slug_allowed("btc-updown-1m-1", &a, &both)); // 1-minute — not 5m/15m
+        assert!(!slug_allowed("will-trump-win-2024", &a, &both));
+        assert!(!slug_allowed("", &a, &both));
+        assert!(slug_allowed("anything-at-all", &[], &both)); // empty assets = allow all
+
+        // 15m disabled (durations = ["5m"]) — 15m markets are now rejected.
+        let only5 = durs(&["5m"]);
+        assert!(slug_allowed("btc-updown-5m-1", &a, &only5));
+        assert!(!slug_allowed("btc-updown-15m-1", &a, &only5));
     }
 }

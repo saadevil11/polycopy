@@ -104,7 +104,7 @@ async fn handle_ws_frame(cfg: &Config, store: &Arc<Store>, tx: &Sender<TargetTra
     }
     store.mark_seen(&id);
     if let Some(trade) = parse_trade(payload) {
-        if !slug_allowed(&trade.slug, filter) {
+        if !slug_allowed(&trade.slug, filter, &cfg.ninetynine_durations) {
             return; // not a market this bot trades — don't log or dispatch
         }
         info!("👁  target {}", trade_line(&trade));
@@ -153,7 +153,7 @@ pub async fn run(cfg: Config, store: Arc<Store>, tx: Sender<TargetTrade>, filter
             }
             store.mark_seen(&id);
             if let Some(t) = parse_trade(it) {
-                if !slug_allowed(&t.slug, &filter) {
+                if !slug_allowed(&t.slug, &filter, &cfg.ninetynine_durations) {
                     continue; // not a market this bot trades — don't log or dispatch
                 }
                 info!("👁  target {}", trade_line(&t));
