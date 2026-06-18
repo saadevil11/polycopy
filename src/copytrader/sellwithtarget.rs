@@ -425,9 +425,10 @@ async fn exit_worker(
 
 /// Profit exit: walk the bid down, selling `remaining` at ~the top of book each
 /// round so we capture the good prices (0.52, 0.51, …) rather than dumping deep.
-/// Sells 1 tick under the best bid (reliably crosses the top level without diving),
-/// reads the real fill (`order_matched`, never /positions), cancels the unfilled
-/// remainder, and retries against a fresh bid. Mutates `remaining`.
+/// Each round is a genuine FAK (fill-and-kill) SELL 1 tick under the best bid: it
+/// fills whatever crosses the top of book NOW and cancels the rest itself (no manual
+/// cancel), then we retry against a fresh bid. Reads the real fill (`order_matched`,
+/// never /positions) and mutates `remaining`.
 async fn sweep_at_bid(
     exec: &Arc<Executor>,
     store: &Arc<Store>,
@@ -448,7 +449,8 @@ async fn sweep_at_bid(
             continue;
         }
         let sell_price = snap_price((bid - tick).max(tick), tick);
-        let oid = match exec.place_gtc(&job.token, job.neg_risk, SIDE_SELL, sell_price, *remaining, tick).await {
+        // FAK: fill what crosses the top of book now, kill the rest (no resting order).
+        let oid = match exec.place_order(&job.token, job.neg_risk, SIDE_SELL, sell_price, *remaining, tick, "FAK").await {
             Ok(o) => o,
             Err(e) => {
                 let msg = e.to_string().to_lowercase();
@@ -463,9 +465,9 @@ async fn sweep_at_bid(
                 continue;
             }
         };
-        sleep(Duration::from_millis(1000)).await;
+        sleep(Duration::from_millis(800)).await;
+        // FAK already cancelled any unfilled remainder — just read what filled.
         let matched = exec.order_matched(&oid).await.unwrap_or(0.0);
-        let _ = exec.cancel_confirmed(&oid, &job.token).await;
         *remaining = (*remaining - matched).max(0.0);
         if matched > EPS {
             store.record_trade(TradeLog {

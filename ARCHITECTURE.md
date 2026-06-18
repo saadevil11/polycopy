@@ -33,9 +33,9 @@ Two strategies, selected by env:
   limit at the target's stale price rarely fills because the book has moved up). **No +1c resting sell**; on the target's
   **first sell** the exit style depends on their sell price vs **our average fill cost**
   (read lag-free from our `/data/trades`): (a) **sold AT/ABOVE our cost (profit) →
-  chase the bid** — sell the remainder at ~1 tick under the best bid each round so we
-  capture the good top-of-book prices (0.52, 0.51, …) instead of dumping deep, retried,
-  then a floor sell mops up any leftover; (b) **sold BELOW our cost (loss) → dump** —
+  chase the bid** — a **FAK** (fill-and-kill) SELL at ~1 tick under the best bid each
+  round, capturing the good top-of-book prices (0.52, 0.51, …) instead of dumping deep,
+  retried against a fresh bid, then a floor sell mops up any leftover; (b) **sold BELOW our cost (loss) → dump** —
   one GTC SELL at `SELL_WITH_TARGET_EXIT_PRICE` (default 0.10), a marketable limit that
   crosses the whole bid side (rejection-proof on a fast/crashing book) and rests any
   remainder at the floor. Runs on a **detached, semaphore-bounded worker** (never
