@@ -1,0 +1,27 @@
+[Unit]
+Description=polybotshadow Polymarket copytrader (Rust) — instance 2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/polybotshadow-2
+# Secrets + config live here (chmod 600, owned by botuser). NEVER commit this.
+EnvironmentFile=/opt/polybotshadow-2/.env
+# IMPORTANT: this MUST point at THIS instance's own binary. A common mistake is
+# leaving it as /opt/polybotshadow/polybotshadow (instance 1's path) — then
+# `update.sh INSTALL_DIR=/opt/polybotshadow-2 ...` copies a new binary that the
+# service never runs, and instance 2 silently keeps executing instance 1's binary.
+ExecStart=/opt/polybotshadow-2/polybotshadow
+Restart=on-failure
+RestartSec=5
+# Persisted state — separate dir per instance so the two bots never share state.
+Environment=COPY_DATA_DIR=/opt/polybotshadow-2/data
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

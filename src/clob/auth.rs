@@ -66,14 +66,10 @@ pub async fn create_or_derive(
     let eoa = wallet.address();
     let sig = signing::sign_clob_auth(wallet, eoa, ts, nonce, cfg.chain_id)?;
     let addr_hex = to_checksum(&eoa, None);
-    // Diagnostics: the EOA we authenticate as (must be the wallet you expect — for a
-    // deposit wallet, its controlling OWNER), plus the signature shape. A 401
-    // "Invalid L1 Request headers" = the server can't recover this address from the
-    // sig (format rejected); a 400 = format accepted but key not creatable.
-    info!(
-        "L1 auth: POLY_ADDRESS(EOA)={addr_hex} ts={ts} nonce={nonce} sig={sig} (sig_len={})",
-        sig.len()
-    );
+    // The EOA we authenticate as — the API key binds to it (must be the wallet you
+    // expect; for a deposit wallet, its controlling OWNER). sig_len flags a malformed
+    // signature (a 401 "Invalid L1 Request headers" = server can't recover the address).
+    info!("L1 auth: deriving CLOB API key as EOA {addr_hex} (sig_len={})", sig.len());
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)
