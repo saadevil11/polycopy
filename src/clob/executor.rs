@@ -148,10 +148,17 @@ impl Executor {
         let salt = signing::generate_salt(now_ms);
         let verifying = if neg_risk { self.neg_risk_exchange_v2 } else { self.exchange_v2 };
 
+        // POLY_1271 deposit wallets (sig type 3): maker == signer == funder
+        // (the deposit wallet). Types 0/1/2: signer is the EOA. The EOA key always
+        // signs; only the order's `signer` field changes.
+        let is_1271 = self.sig_type == signing::SIG_TYPE_POLY_1271;
+        let order_signer_addr = if is_1271 { self.funder_addr } else { self.wallet.address() };
+        let order_signer_checksum = if is_1271 { &self.funder_checksum } else { &self.signer_checksum };
+
         let order = OrderInput {
             salt,
             maker: self.funder_addr,
-            signer: self.wallet.address(),
+            signer: order_signer_addr,
             token_id: token_u256,
             maker_amount,
             taker_amount,
@@ -165,7 +172,7 @@ impl Executor {
             "order": {
                 "salt": salt as u64,
                 "maker": self.funder_checksum,
-                "signer": self.signer_checksum,
+                "signer": order_signer_checksum,
                 "tokenId": token_id,
                 "makerAmount": maker_amount.to_string(),
                 "takerAmount": taker_amount.to_string(),

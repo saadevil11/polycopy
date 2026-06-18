@@ -29,6 +29,13 @@ const CLOB_AUTH_STRUCT_TYPE: &str =
 pub const SIDE_BUY: u8 = 0;
 pub const SIDE_SELL: u8 = 1;
 pub const SIG_TYPE_GNOSIS_SAFE: u8 = 2;
+pub const SIG_TYPE_POLY_1271: u8 = 3;
+
+// Solady ERC-7739 "TypedDataSign" wrapper — POLY_1271 / deposit wallets (sig type
+// 3). The full prefix is concatenated with ORDER_TYPE_STRING (no separator).
+const SOLADY_TYPE_PREFIX: &str = "TypedDataSign(Order contents,string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)";
+const DEPOSIT_WALLET_NAME: &str = "DepositWallet";
+const DEPOSIT_WALLET_VERSION: &str = "1";
 
 /// (price_decimals, size_decimals, amount_decimals) keyed by tick size string.
 fn round_config(tick: f64) -> (i32, i32, i32) {
@@ -203,17 +210,70 @@ pub fn order_hash(o: &OrderInput, verifying: Address, chain_id: u64) -> [u8; 32]
     eip712_digest(ds, sh)
 }
 
-/// Sign the order with the owner EOA (sig type 2 plain-hash path). Returns the
-/// 0x-prefixed 65-byte signature, exactly as eth_account would produce.
+/// Sign the order. sig type 0/1/2 sign the plain EIP-712 order digest (the owner
+/// EOA path); sig type 3 (POLY_1271 deposit wallet) uses the Solady ERC-7739
+/// nested-signature scheme. Returns the 0x-prefixed signature exactly as
+/// py-clob-client-v2 would produce.
 pub fn sign_order(
     wallet: &LocalWallet,
     o: &OrderInput,
     verifying: Address,
     chain_id: u64,
 ) -> anyhow::Result<String> {
+    if o.sig_type == SIG_TYPE_POLY_1271 {
+        return sign_order_1271(wallet, o, verifying, chain_id);
+    }
     let digest = order_hash(o, verifying, chain_id);
     let sig: Signature = wallet.sign_hash(H256::from(digest))?;
     Ok(format!("0x{}", hex::encode(sig.to_vec())))
+}
+
+/// POLY_1271 (sig type 3 / deposit wallet) signature — a Solady ERC-7739
+/// "TypedDataSign" nested EIP-712 signature. The order's `maker == signer ==
+/// funder` (the deposit wallet); the controlling EOA `wallet` produces the inner
+/// ECDSA sig over the wrapped digest, then the Solady suffix is appended. Faithful
+/// to py-clob-client-v2 `ExchangeOrderBuilderV2._build_poly_1271_order_signature`.
+pub fn sign_order_1271(
+    wallet: &LocalWallet,
+    o: &OrderInput,
+    verifying: Address,
+    chain_id: u64,
+) -> anyhow::Result<String> {
+    // 1. contents hash = the standard 11-field Order struct hash.
+    let contents_hash = order_struct_hash(
+        o.salt, o.maker, o.signer, o.token_id, o.maker_amount, o.taker_amount, o.side,
+        o.sig_type, o.timestamp_ms,
+    );
+    // 2. App (CTF Exchange) domain separator — what the final digest is sealed under.
+    let app_sep = order_domain_separator(verifying, chain_id);
+    // 3. TypedDataSign struct hash, carrying the *DepositWallet* domain fields.
+    let solady_type_hash = {
+        let mut s = String::from(SOLADY_TYPE_PREFIX);
+        s.push_str(ORDER_TYPE_STRING);
+        keccak256(s.as_bytes())
+    };
+    let tds_hash = keccak256(encode(&[
+        Token::FixedBytes(solady_type_hash.to_vec()),
+        Token::FixedBytes(contents_hash.to_vec()),
+        Token::FixedBytes(ks(DEPOSIT_WALLET_NAME).to_vec()),
+        Token::FixedBytes(ks(DEPOSIT_WALLET_VERSION).to_vec()),
+        Token::Uint(U256::from(chain_id)),
+        Token::Address(o.signer), // deposit wallet = the 1271 verifying contract
+        Token::FixedBytes(vec![0u8; 32]), // DepositWallet domain salt = bytes32(0)
+    ]));
+    // 4. Final digest: keccak(0x1901 || app_domain_separator || tds_hash).
+    let digest = eip712_digest(app_sep, tds_hash);
+    // 5. Raw-hash ECDSA sign with the controlling EOA (v in {27,28}).
+    let sig: Signature = wallet.sign_hash(H256::from(digest))?;
+    // 6. Append the Solady ERC-7739 suffix.
+    let type_str = ORDER_TYPE_STRING.as_bytes();
+    let mut out = Vec::with_capacity(65 + 32 + 32 + type_str.len() + 2);
+    out.extend_from_slice(&sig.to_vec()); // 65: r || s || v
+    out.extend_from_slice(&app_sep); // 32: app domain separator
+    out.extend_from_slice(&contents_hash); // 32: order contents hash
+    out.extend_from_slice(type_str); // N: ORDER_TYPE_STRING (ASCII)
+    out.extend_from_slice(&(type_str.len() as u16).to_be_bytes()); // 2: uint16 big-endian
+    Ok(format!("0x{}", hex::encode(out)))
 }
 
 // ── L1 ClobAuth signing (derive/create API key) ─────────────────────────────
@@ -291,8 +351,30 @@ pub fn selftest(private_key: &str, funder: &str) -> anyhow::Result<()> {
     println!("maker  (funder)   = {maker:?}");
     println!("makerAmount={maker_amount}  takerAmount={taker_amount}  (BUY 5 @ 0.999, tick 0.001)");
     println!("salt=479249096354 timestamp_ms=1700000000000 side=0 sigType=2");
+
+    // ── signatureType 3 (POLY_1271 deposit wallet): maker == signer == funder ──
+    let o3 = OrderInput {
+        salt: 479249096354,
+        maker,
+        signer: maker, // deposit wallet (maker == signer)
+        token_id,
+        maker_amount,
+        taker_amount,
+        side: SIDE_BUY,
+        sig_type: SIG_TYPE_POLY_1271,
+        timestamp_ms: 1700000000000,
+    };
+    println!("\n--- signatureType 3 (POLY_1271 deposit wallet; maker=signer=funder) ---");
+    for (label, addr) in [
+        ("exchange_v2", "0xE111180000d2663C0091e4f400237545B87B996B"),
+        ("neg_risk_exchange_v2", "0xe2222d279d744050d28e00520010520000310F59"),
+    ] {
+        let verifying: Address = addr.parse()?;
+        let sig = sign_order_1271(&wallet, &o3, verifying, 137)?;
+        println!("[{label}] sigType3 signature = {sig}");
+    }
     println!("\nRun the SAME fixed inputs through py-clob-client-v2 ExchangeOrderBuilderV2");
-    println!("(build_order_hash / build_order_signature) and confirm both match.");
+    println!("(build_order_hash / build_order_signature, types 2 AND 3) and confirm all match.");
     Ok(())
 }
 
@@ -333,6 +415,33 @@ mod tests {
         assert!((snap_price(0.999, 0.001) - 0.999).abs() < 1e-9);
         assert!((snap_price(0.999, 0.01) - 0.99).abs() < 1e-9); // 0.999 invalid on 0.01 tick
         assert!((snap_price(1.0, 0.01) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn poly_1271_signature_matches_py_clob_client_v2() {
+        // Type-3 (POLY_1271 deposit wallet) signature, validated byte-for-byte
+        // against py-clob-client-v2 ExchangeOrderBuilderV2._build_poly_1271_order_signature
+        // for this fixed vector (Hardhat key #0; maker==signer==funder).
+        let wallet: LocalWallet =
+            "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".parse().unwrap();
+        let funder: Address = "0xCa6b93ad9ec941ec69FF9fC7A97859A9a442ff01".parse().unwrap();
+        let o = OrderInput {
+            salt: 479249096354,
+            maker: funder,
+            signer: funder, // maker == signer == funder for type 3
+            token_id: U256::from_dec_str(
+                "48331043336612883890938759509493159234755048973500640148014422747788308965732",
+            )
+            .unwrap(),
+            maker_amount: 4_995_000,
+            taker_amount: 5_000_000,
+            side: SIDE_BUY,
+            sig_type: SIG_TYPE_POLY_1271,
+            timestamp_ms: 1700000000000,
+        };
+        let v: Address = "0xE111180000d2663C0091e4f400237545B87B996B".parse().unwrap();
+        let sig = sign_order_1271(&wallet, &o, v, 137).unwrap();
+        assert_eq!(sig, "0x84883bb17d94e62bda68b7ea90484edcb38f352efa1c74c2493216883ea1049f41629e36fc476c723ea9be9b191c109c0e52666059cb71a45985c38ba25f10261b3264e159346253e26a64e00b69032db0e7d32f94628de3e6eecb50304d7af3d26fbc2d714b3f258bc77896fe86ef46081972aea73e842b9d54734bb84e7462014f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba");
     }
 
     #[test]

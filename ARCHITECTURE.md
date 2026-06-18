@@ -65,7 +65,7 @@ probes. The Rust signing is **byte-for-byte validated** against it (see §6).
 | Data API (positions / activity) | `https://data-api.polymarket.com` |
 | Activity WebSocket (target's fills) | `wss://ws-live-data.polymarket.com` |
 | Chain | Polygon, `chain_id = 137` |
-| Signature type | `2` (Gnosis-Safe proxy) — `PRIVATE_KEY` signs, `FUNDER_ADDRESS` = maker |
+| Signature type | `2` Gnosis-Safe (old wallets) · `3` POLY_1271 deposit wallet (NEW post-v2 accounts) — `PRIVATE_KEY` always signs, `FUNDER_ADDRESS` = maker |
 | **CTF Exchange V2** (negRisk=false) | `0xE111180000d2663C0091e4f400237545B87B996B` |
 | **Neg-Risk Exchange V2** (negRisk=true) | `0xe2222d279d744050d28e00520010520000310F59` |
 | Order type | **GTC** limit, BUY=0 / SELL=1, 5-share min |
@@ -81,10 +81,17 @@ probes. The Rust signing is **byte-for-byte validated** against it (see §6).
   `Order(uint256 salt,address maker,address signer,uint256 tokenId,uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,uint256 timestamp,bytes32 metadata,bytes32 builder)`.
   V2 dropped `taker/expiration/nonce/feeRateBps` from the hash and added
   `timestamp` (ms), `metadata`, `builder` (both `bytes32(0)`).
-- `maker` = funder/Safe; `signer` = signing EOA; BUY=0 / SELL=1; `signatureType`
-  2; `timestamp` = ms; `salt = floor(rand()*now_ms)`. Sign the plain EIP-712
-  digest with the owner EOA → 65-byte sig (the Solady 1271 wrapper is only for
-  `signatureType=3` — not us).
+- **Type 2 (Gnosis-Safe, old wallets):** `maker` = funder/Safe, `signer` = signing
+  EOA; sign the plain EIP-712 order digest with the owner EOA → 65-byte sig.
+- **Type 3 (POLY_1271 deposit wallet, NEW post-v2 accounts):** `maker = signer =
+  funder` (the deposit wallet). The signature is a **Solady ERC-7739
+  "TypedDataSign" nested** sig: hashStruct(Order) → wrap in TypedDataSign carrying
+  the `DepositWallet` domain → seal under the CTF-Exchange domain separator →
+  raw-ECDSA sign with the EOA → append suffix `appDomainSeparator‖contentsHash‖
+  ORDER_TYPE_STRING‖uint16(len)`. Implemented in `sign_order_1271`; **validated
+  byte-for-byte vs py-clob-client-v2** (`cargo test poly_1271…`). L1/L2 auth is
+  unchanged (POLY_ADDRESS = EOA).
+- BUY=0 / SELL=1; `timestamp` = ms; `salt = floor(rand()*now_ms)`.
 - **Amounts:** `buy_amounts`/`sell_amounts` pick `ROUNDING_CONFIG` by tick;
   6-dp token decimals. `expiration` ("0" = GTC) goes in the POST body but NOT the
   signed hash. Both buy and sell paths are validated against py-clob-client-v2.
