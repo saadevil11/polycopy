@@ -10,7 +10,7 @@ use ethers_signers::{LocalWallet, Signer};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::Sha256;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::clob::signing;
 use crate::config::Config;
@@ -66,6 +66,14 @@ pub async fn create_or_derive(
     let eoa = wallet.address();
     let sig = signing::sign_clob_auth(wallet, eoa, ts, nonce, cfg.chain_id)?;
     let addr_hex = to_checksum(&eoa, None);
+    // Diagnostics: the EOA we authenticate as (must be the wallet you expect — for a
+    // deposit wallet, its controlling OWNER), plus the signature shape. A 401
+    // "Invalid L1 Request headers" = the server can't recover this address from the
+    // sig (format rejected); a 400 = format accepted but key not creatable.
+    info!(
+        "L1 auth: POLY_ADDRESS(EOA)={addr_hex} ts={ts} nonce={nonce} sig={sig} (sig_len={})",
+        sig.len()
+    );
 
     let l1 = |rb: reqwest::RequestBuilder| {
         rb.header("POLY_ADDRESS", &addr_hex)
@@ -75,18 +83,21 @@ pub async fn create_or_derive(
     };
 
     // create
-    let create = l1(client.post(format!("{}/auth/api-key", cfg.clob_url)))
-        .send()
-        .await;
-    if let Ok(r) = create {
-        if r.status().is_success() {
-            if let Ok(v) = r.json::<Value>().await {
-                if let Some(c) = parse_creds(&v) {
+    match l1(client.post(format!("{}/auth/api-key", cfg.clob_url))).send().await {
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            if status.is_success() {
+                if let Some(c) = serde_json::from_str::<Value>(&body).ok().as_ref().and_then(parse_creds) {
                     info!("clob auth: created API key {}", mask(&c.api_key));
                     return Ok(c);
                 }
+                warn!("clob auth: POST /auth/api-key -> {status} but no creds in body: {body}");
+            } else {
+                warn!("clob auth: POST /auth/api-key -> {status}: {body}");
             }
         }
+        Err(e) => warn!("clob auth: POST /auth/api-key request error: {e}"),
     }
     // derive
     let derive = l1(client.get(format!("{}/auth/derive-api-key", cfg.clob_url)))
