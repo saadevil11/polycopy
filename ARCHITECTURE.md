@@ -26,6 +26,16 @@ Two strategies, selected by env:
   target sells are ignored; an unfilled buy is cancelled after
   `NINETYNINE_BUY_MAX_AGE_SECS` so it doesn't strand capital. Takes priority over
   brownfox when both are enabled.
+- **99c-scanner** (`USE_99C_SCANNER_MODE=true`) — **self-driven, NO target trader**.
+  Runs *instead of* the copytrader: discovers all open `<asset>-updown-5m` markets
+  (Gamma, `NINETYNINE_ASSETS`), subscribes to their order books on the **CLOB market
+  WebSocket** (`wss://ws-subscriptions-clob.polymarket.com/ws/market`, public), and
+  when a token's **best ask reaches `SCANNER_TRIGGER_ASK` (0.99) and `< 1.0`** places
+  **one GTC buy of `SCANNER_TRADE_SIZE_SHARES` (≥5) at `SCANNER_BUY_PRICE` (0.99)** and
+  holds to resolution. Atomic per-token claim (`claim_scan`) = no double-buy; detached
+  semaphore-bounded placement; fills via `order_matched` (never `/positions`); stale-
+  cancel via `NINETYNINE_BUY_MAX_AGE_SECS`; restart-safe; terminal records pruned. Buys
+  the same markets as 99c but order-book-driven so it doesn't miss the trader's entries.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels
@@ -148,6 +158,7 @@ src/
     brownfox.rs           one-fixed-share-buy-per-market state machine (restart-safe)
     ninetynine.rs         99c buy-and-hold: one fixed-share buy/market, hold to resolution
     sellwithtarget.rs     brownfox entry; on target's sell, market-sell all (non-blocking worker)
+    scanner.rs            99c order-book scanner: no target; CLOB market WS, buy 0.99 when ask hits it
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer
@@ -168,7 +179,10 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `NINETYNINE_TRADE_SIZE_SHARES`, `NINETYNINE_RECONCILE_MS`,
 `NINETYNINE_BUY_MAX_AGE_SECS`, `NINETYNINE_ASSETS` (only copy
 `<asset>-updown-<dur>-*` markets; empty = all), `NINETYNINE_DURATIONS` (default
-`5m,15m`; set `5m` to disable 15-minute). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
+`SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
+(0.99), `SCANNER_DISCOVERY_SECS` (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/
+`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

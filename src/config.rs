@@ -54,6 +54,16 @@ pub struct Config {
     /// Max concurrent 99c buy placements (parallel across markets; bounds 429s).
     pub ninetynine_max_concurrent_buys: usize,
 
+    // 99c order-book SCANNER (no target trader): watch the order books of all
+    // <asset>-updown-5m markets via the CLOB market websocket and place a GTC buy at
+    // 0.99 when the best ASK reaches it; hold to resolution. Uses ninetynine_assets +
+    // ninetynine_buy_max_age + ninetynine_reconcile for the shared knobs.
+    pub scanner_enabled: bool,
+    pub scanner_trade_size_shares: f64, // shares per market (>= 5)
+    pub scanner_buy_price: f64,         // GTC buy limit price (default 0.99)
+    pub scanner_trigger_ask: f64,       // fire when best_ask >= this and < 1.0 (default 0.99)
+    pub scanner_discovery: Duration,    // Gamma re-discovery cadence (new 5m markets open every 5m)
+
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
     pub sell_with_target_enabled: bool,
@@ -101,6 +111,7 @@ pub struct Config {
     pub clob_url: String,
     pub data_api_url: String,
     pub data_ws_url: String, // activity socket (pushes a trader's fills)
+    pub clob_ws_url: String, // CLOB market order-book socket (99c scanner)
     pub chain_id: u64,
     pub exchange_v2: String,          // standard CTF Exchange V2 (negRisk=false)
     pub neg_risk_exchange_v2: String, // Neg-Risk CTF Exchange V2 (negRisk=true)
@@ -190,6 +201,11 @@ impl Config {
             ninetynine_assets: env_list("NINETYNINE_ASSETS", ""),
             ninetynine_durations: env_list("NINETYNINE_DURATIONS", "5m,15m"),
             ninetynine_max_concurrent_buys: (env_u64("NINETYNINE_MAX_CONCURRENT_BUYS", 8) as usize).max(1),
+            scanner_enabled: env_bool("USE_99C_SCANNER_MODE", false),
+            scanner_trade_size_shares: env_f64("SCANNER_TRADE_SIZE_SHARES", 10.0).max(5.0),
+            scanner_buy_price: env_f64("SCANNER_BUY_PRICE", 0.99),
+            scanner_trigger_ask: env_f64("SCANNER_TRIGGER_ASK", 0.99),
+            scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
@@ -217,6 +233,7 @@ impl Config {
             clob_url: "https://clob.polymarket.com".into(),
             data_api_url: "https://data-api.polymarket.com".into(),
             data_ws_url: "wss://ws-live-data.polymarket.com".into(),
+            clob_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market".into(),
             chain_id: 137,
             exchange_v2: "0xE111180000d2663C0091e4f400237545B87B996B".into(),
             neg_risk_exchange_v2: "0xe2222d279d744050d28e00520010520000310F59".into(),

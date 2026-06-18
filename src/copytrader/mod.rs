@@ -14,6 +14,7 @@ pub mod dashboard;
 pub mod monitor;
 pub mod ninetynine;
 pub mod replicator;
+pub mod scanner;
 pub mod sellwithtarget;
 pub mod stale;
 pub mod store;

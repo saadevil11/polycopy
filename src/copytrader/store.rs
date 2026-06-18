@@ -41,6 +41,8 @@ pub struct Store {
     ninetynine: Mutex<HashMap<String, BrownfoxRecord>>,
     /// sell-with-target mode per-market records (separate file; sell_price unused).
     sellwithtarget: Mutex<HashMap<String, BrownfoxRecord>>,
+    /// 99c order-book scanner records, keyed by TOKEN id (separate file).
+    scanner: Mutex<HashMap<String, BrownfoxRecord>>,
     /// market_id -> token_id for markets the general replicator has copied
     /// (drives MAX_POSITIONS counting + the auto-sell token set).
     copied: Mutex<HashMap<String, String>>,
@@ -59,6 +61,8 @@ impl Store {
             read_json(&dir.join("ninetynine.json")).unwrap_or_default();
         let sellwithtarget: HashMap<String, BrownfoxRecord> =
             read_json(&dir.join("sellwithtarget.json")).unwrap_or_default();
+        let scanner: HashMap<String, BrownfoxRecord> =
+            read_json(&dir.join("scanner.json")).unwrap_or_default();
         let copied: HashMap<String, String> =
             read_json(&dir.join("copied.json")).unwrap_or_default();
         let trades: Vec<TradeLog> = read_json(&dir.join("trades.json")).unwrap_or_default();
@@ -68,6 +72,7 @@ impl Store {
             brownfox: Mutex::new(brownfox),
             ninetynine: Mutex::new(ninetynine),
             sellwithtarget: Mutex::new(sellwithtarget),
+            scanner: Mutex::new(scanner),
             copied: Mutex::new(copied),
             trades: Mutex::new(trades),
         }
@@ -233,6 +238,68 @@ impl Store {
             .filter(|(_, r)| r.status == "ACTIVE" || r.status == "EXITING")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
+    }
+
+    // ── 99c order-book scanner state (keyed by TOKEN id; separate file) ─────────
+    /// Atomically claim a token for the scanner (contains-key + insert under one
+    /// lock = the single linearization point that makes concurrent triggers for the
+    /// same token impossible to double-buy). Returns false if already claimed.
+    pub fn claim_scan(&self, token: &str, rec: BrownfoxRecord) -> bool {
+        let mut m = self.scanner.lock().unwrap();
+        if m.contains_key(token) {
+            return false;
+        }
+        m.insert(token.to_string(), rec);
+        write_json(&self.dir.join("scanner.json"), &*m);
+        true
+    }
+    pub fn scan_claimed(&self, token: &str) -> bool {
+        self.scanner.lock().unwrap().contains_key(token)
+    }
+    pub fn update_scan_status(&self, token: &str, status: &str) {
+        let mut m = self.scanner.lock().unwrap();
+        if let Some(r) = m.get_mut(token) {
+            r.status = status.to_string();
+            write_json(&self.dir.join("scanner.json"), &*m);
+        }
+    }
+    pub fn set_scan_order_id(&self, token: &str, order_id: &str) {
+        let mut m = self.scanner.lock().unwrap();
+        if let Some(r) = m.get_mut(token) {
+            r.order_id = order_id.to_string();
+            write_json(&self.dir.join("scanner.json"), &*m);
+        }
+    }
+    pub fn delete_scan(&self, token: &str) {
+        let mut m = self.scanner.lock().unwrap();
+        if m.remove(token).is_some() {
+            write_json(&self.dir.join("scanner.json"), &*m);
+        }
+    }
+    /// Scanner tokens still being managed (not yet FILLED/CANCELLED) — for resume.
+    pub fn active_scan(&self) -> Vec<(String, BrownfoxRecord)> {
+        self.scanner
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| r.status != "FILLED" && r.status != "CANCELLED")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+    /// Drop terminal scanner records (FILLED/CANCELLED) whose buy was placed before
+    /// `cutoff_ms`, so scanner.json stays bounded (the scanner touches thousands of
+    /// 5m markets/day). A resolved market's token never recurs, so this can't cause a
+    /// re-buy. Keeps ACTIVE records regardless.
+    pub fn prune_scan(&self, cutoff_ms: u64) {
+        let mut m = self.scanner.lock().unwrap();
+        let before = m.len();
+        m.retain(|_, r| {
+            let terminal = r.status == "FILLED" || r.status == "CANCELLED";
+            !(terminal && r.placed_at_ms < cutoff_ms)
+        });
+        if m.len() != before {
+            write_json(&self.dir.join("scanner.json"), &*m);
+        }
     }
 }
 
