@@ -12,10 +12,11 @@
 //! A gap is **mitigated** (dropped) once a later candle **closes** beyond its far edge
 //! (bull: close < zone.min; bear: close > zone.max) — the indicator's own rule.
 //!
-//! It emits a **directional** signal for the coin's current 5-minute candle (the
-//! market's window) vs the un-mitigated FVGs pooled from 5m + 15m: inside a **bearish**
-//! FVG (down-imbalance / resistance) blocks buying **Up**; inside a **bullish** FVG
-//! (up-imbalance / support) blocks buying **Down**. Same data path as the liquidity
+//! It emits a **directional** signal when the coin's current 5-minute candle **taps** an
+//! un-mitigated FVG pooled from 5m + 15m — the candle must have **opened outside** the gap
+//! and then **wicked into** it during the window (a candle that opened inside is not a
+//! tap). Tapping a **bearish** FVG (resistance) blocks buying **Up**; tapping a **bullish**
+//! FVG (support) blocks buying **Down**. Same data path as the liquidity
 //! filter: live price (forming-candle wick) via the Binance kline WebSocket, the slower
 //! FVG zones recomputed from REST every `SCANNER_LIQ_POLL_SECS`. Coins with no Binance
 //! USDT pair (e.g. HYPE) have no data → the signal is not evaluable (the scanner skips).
@@ -38,6 +39,7 @@ const LIMIT: u32 = 120; // candles fetched per (coin,tf): plenty of history for 
 #[derive(Default, Clone)]
 struct FvgSeries {
     zones: Vec<(f64, f64, bool)>, // active (un-mitigated) FVG bands: (min, max, is_bullish)
+    cur_open: f64,                // current (forming) candle OPEN (fixed at the window start)
     cur_hi: f64,                  // current (forming) candle running high (0 = no data yet)
     cur_lo: f64,                  // current (forming) candle running low
 }
@@ -187,6 +189,7 @@ impl Fvg {
         };
         let sym = data.get("s").and_then(|x| x.as_str()).unwrap_or("");
         let interval = k.get("i").and_then(|x| x.as_str()).unwrap_or("");
+        let open = k.get("o").and_then(num_f64).unwrap_or(0.0);
         let hi = k.get("h").and_then(num_f64).unwrap_or(0.0);
         let lo = k.get("l").and_then(num_f64).unwrap_or(0.0);
         if sym.is_empty() || interval.is_empty() || hi <= 0.0 || lo <= 0.0 {
@@ -198,6 +201,7 @@ impl Fvg {
         };
         let mut map = self.series.lock().unwrap();
         let s = map.entry(format!("{coin}:{interval}")).or_default();
+        s.cur_open = open; // fixed for the forming candle; the open price at the window start
         s.cur_hi = hi;
         s.cur_lo = lo;
     }
@@ -233,6 +237,7 @@ impl Fvg {
             }
         }
         let forming = &rows[rows.len() - 1];
+        let cur_open = forming.get(1).and_then(num_f64).unwrap_or(0.0);
         let cur_hi = forming.get(2).and_then(num_f64).unwrap_or(0.0);
         let cur_lo = forming.get(3).and_then(num_f64).unwrap_or(0.0);
         let zones = compute_fvgs(&bars, self.thr, self.auto);
@@ -240,14 +245,16 @@ impl Fvg {
         let mut map = self.series.lock().unwrap();
         let s = map.entry(format!("{coin}:{tf}")).or_default();
         s.zones = zones;
+        s.cur_open = cur_open;
         s.cur_hi = cur_hi;
         s.cur_lo = cur_lo;
     }
 
-    /// Directional avoidance signal for this coin's current 5m window. The current 5m
-    /// candle is tested for overlap against every un-mitigated FVG pooled from 5m + 15m:
-    ///   * inside a **bearish** FVG (resistance / down-imbalance) → `block_up`,
-    ///   * inside a **bullish** FVG (support / up-imbalance)       → `block_down`.
+    /// Directional avoidance signal for this coin's current 5m window. The signal is a
+    /// fresh TAP: the 5m candle must have OPENED OUTSIDE an FVG and then wicked INTO it
+    /// during the window — a candle that merely opened inside a gap is NOT a signal.
+    ///   * tapped a **bearish** FVG (resistance / down-imbalance) → `block_up`,
+    ///   * tapped a **bullish** FVG (support / up-imbalance)       → `block_down`.
     /// `evaluable` is false when we can't judge (no Binance pair, or a timeframe not yet
     /// seeded); a disabled filter is trivially evaluable and blocks nothing.
     pub fn signal(&self, coin: &str) -> FilterSignal {
@@ -258,8 +265,9 @@ impl Fvg {
             return FilterSignal::default();
         }
         let map = self.series.lock().unwrap();
-        let (cur_hi, cur_lo) = match map.get(&format!("{coin}:5m")) {
-            Some(s) if s.cur_hi > 0.0 => (s.cur_hi, s.cur_lo),
+        // The acting candle is always the 5m candle (its open = the window's start price).
+        let (cur_open, cur_hi, cur_lo) = match map.get(&format!("{coin}:5m")) {
+            Some(s) if s.cur_hi > 0.0 => (s.cur_open, s.cur_hi, s.cur_lo),
             _ => return FilterSignal::default(),
         };
         let mut zones: Vec<(f64, f64, bool)> = Vec::new();
@@ -270,22 +278,27 @@ impl Fvg {
             }
         }
         FilterSignal {
-            block_up: in_zone(cur_hi, cur_lo, &zones, false),  // bearish FVG → block Up
-            block_down: in_zone(cur_hi, cur_lo, &zones, true), // bullish FVG → block Down
+            block_up: tapped(cur_open, cur_hi, cur_lo, &zones, false),  // bearish FVG → block Up
+            block_down: tapped(cur_open, cur_hi, cur_lo, &zones, true), // bullish FVG → block Down
             evaluable: true,
         }
     }
 }
 
-/// True if the 5m window candle (`cur_hi`/`cur_lo`) overlaps any FVG band of the wanted
-/// direction (`want_bull`): its range reached into the gap. cur_hi==0 → no live data.
-fn in_zone(cur_hi: f64, cur_lo: f64, zones: &[(f64, f64, bool)], want_bull: bool) -> bool {
-    if cur_hi <= 0.0 {
+/// True if the 5m candle TAPPED into an FVG band of the wanted direction this window: it
+/// **opened outside** the gap (open < min or open > max) and its range has now **reached
+/// in** (cur_hi ≥ min and cur_lo ≤ max). A candle that opened inside the gap is NOT a tap.
+/// cur_hi==0 / cur_open==0 → no live data → not a tap.
+fn tapped(cur_open: f64, cur_hi: f64, cur_lo: f64, zones: &[(f64, f64, bool)], want_bull: bool) -> bool {
+    if cur_hi <= 0.0 || cur_open <= 0.0 {
         return false;
     }
-    zones
-        .iter()
-        .any(|&(min, max, is_bull)| is_bull == want_bull && cur_hi >= min && cur_lo <= max)
+    zones.iter().any(|&(min, max, is_bull)| {
+        is_bull == want_bull
+            && (cur_open < min || cur_open > max) // opened OUTSIDE the gap
+            && cur_hi >= min
+            && cur_lo <= max // and the range has since reached into it
+    })
 }
 
 /// Active (un-mitigated) fair value gaps over closed `bars` (each `(high, low, close)`,
@@ -407,19 +420,22 @@ mod tests {
     }
 
     #[test]
-    fn in_zone_is_directional_overlap() {
-        let bull = [(100.0, 103.0, true)]; // a bullish gap band
-        let bear = [(100.0, 103.0, false)]; // same band, bearish
-        // overlap + matching direction
-        assert!(in_zone(104.0, 99.0, &bull, true)); // candle straddles bull gap → block Down
-        assert!(in_zone(101.0, 100.5, &bull, true)); // inside the gap
-        // overlap but WRONG direction → not a hit for that side
-        assert!(!in_zone(104.0, 99.0, &bull, false)); // a bull gap never blocks Up
-        assert!(in_zone(104.0, 99.0, &bear, false)); // a bear gap blocks Up
-        assert!(!in_zone(104.0, 99.0, &bear, true)); // a bear gap never blocks Down
-        // no overlap
-        assert!(!in_zone(110.0, 104.0, &bull, true)); // price entirely above
-        assert!(!in_zone(99.0, 95.0, &bull, true)); // price entirely below
-        assert!(!in_zone(0.0, 0.0, &bull, true)); // no live data
+    fn tapped_requires_open_outside_then_reach_in() {
+        let bull = [(100.0, 103.0, true)]; // a bullish gap band (support)
+        let bear = [(100.0, 103.0, false)]; // same band, bearish (resistance)
+        // opened ABOVE (104) then wicked DOWN into the bull gap → tap → block Down
+        assert!(tapped(104.0, 104.5, 99.0, &bull, true));
+        // opened BELOW (99) then wicked UP into the bear gap → tap → block Up
+        assert!(tapped(99.0, 104.0, 98.5, &bear, false));
+        // opened INSIDE the gap (101.5) → NOT a tap, even though range overlaps
+        assert!(!tapped(101.5, 104.0, 99.0, &bull, true));
+        // opened outside but range never reached the gap → no tap
+        assert!(!tapped(110.0, 112.0, 104.0, &bull, true)); // stayed above
+        assert!(!tapped(98.0, 99.5, 95.0, &bear, false)); // stayed below
+        // wrong direction → never blocks that side
+        assert!(!tapped(104.0, 104.5, 99.0, &bull, false)); // bull gap never blocks Up
+        assert!(!tapped(99.0, 104.0, 98.5, &bear, true)); // bear gap never blocks Down
+        // no live data
+        assert!(!tapped(0.0, 0.0, 0.0, &bull, true));
     }
 }
