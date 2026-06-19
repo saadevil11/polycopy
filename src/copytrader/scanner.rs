@@ -36,6 +36,9 @@ const MIN_SHARES: f64 = 5.0;
 const EPS: f64 = 0.01;
 const GAMMA: &str = "https://gamma-api.polymarket.com";
 const DEFAULT_ASSETS: [&str; 7] = ["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"];
+/// Binary-book invariant (demogui `_prices_sane`): the two outcomes' best asks sum to ≈1
+/// plus spread. Over this = a stale / one-sided / incoherent book → don't trade it.
+const SANE_ASK_SUM_MAX: f64 = 1.10;
 
 #[derive(Clone)]
 struct MarketInfo {
@@ -43,6 +46,9 @@ struct MarketInfo {
     title: String,
     outcome: String, // Up / Down
     tick: f64,
+    market: String, // the slug — groups the Up/Down pair (one 5m market)
+    end_ts: u64,     // window end unix ts (slug ts + 300) — for display
+    sister: String,  // the OTHER outcome's token id — for book-sanity (Up_ask+Down_ask)
 }
 
 pub struct Scanner {
@@ -190,10 +196,14 @@ impl Scanner {
             let tick = m.get("orderPriceMinTickSize").and_then(num_f64).unwrap_or(0.01);
             let toks = str_array(m.get("clobTokenIds")); // ["UpTok","DownTok"]
             let outs = str_array(m.get("outcomes")); // ["Up","Down"]
+            // slug ts is the window START; the window ends 300s later.
+            let end_ts = slug.rsplit('-').next().and_then(|s| s.parse::<u64>().ok()).map(|t| t + 300).unwrap_or(0);
             for (i, tok) in toks.iter().enumerate() {
                 if tok.is_empty() {
                     continue;
                 }
+                // sister = the other outcome's token id (for the Up_ask+Down_ask sanity check)
+                let sister = toks.iter().enumerate().find(|(j, t)| *j != i && !t.is_empty()).map(|(_, t)| t.clone()).unwrap_or_default();
                 next.insert(
                     tok.clone(),
                     MarketInfo {
@@ -201,6 +211,9 @@ impl Scanner {
                         title: title.clone(),
                         outcome: outs.get(i).cloned().unwrap_or_default(),
                         tick,
+                        market: slug.to_string(),
+                        end_ts,
+                        sister,
                     },
                 );
             }
@@ -353,37 +366,44 @@ impl Scanner {
     /// each market is to the 0.99 trigger. Groups the live tokens by coin into Up/Down
     /// best asks, sorted by the side nearest 1.0 first.
     fn heartbeat(&self) {
-        // coin -> (up_ask, down_ask)
-        let mut by_coin: HashMap<String, (f64, f64)> = HashMap::new();
+        // ONE row per MARKET (slug) — never conflate the 3 live windows of a coin.
+        // market -> (coin, end_ts, up_ask, down_ask)
+        let mut by_market: HashMap<String, (String, u64, f64, f64)> = HashMap::new();
         {
             let markets = self.markets.lock().unwrap();
             let asks = self.last_ask.lock().unwrap();
             for (token, info) in markets.iter() {
                 let ask = asks.get(token).copied().unwrap_or(0.0);
-                let e = by_coin.entry(info.asset.clone()).or_insert((0.0, 0.0));
+                let e = by_market.entry(info.market.clone()).or_insert((info.asset.clone(), info.end_ts, 0.0, 0.0));
                 if info.outcome.eq_ignore_ascii_case("up") {
-                    e.0 = ask;
+                    e.2 = ask;
                 } else {
-                    e.1 = ask;
+                    e.3 = ask;
                 }
             }
         }
-        if by_coin.is_empty() {
+        if by_market.is_empty() {
             info!("🔭 99c-scanner: no live markets right now (waiting for the next 5m window)");
             return;
         }
-        let mut rows: Vec<(String, f64, f64)> = by_coin.into_iter().map(|(c, (u, d))| (c, u, d)).collect();
-        // closest-to-trigger coin first
-        rows.sort_by(|a, b| b.1.max(b.2).partial_cmp(&a.1.max(a.2)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut rows: Vec<(String, u64, f64, f64)> = by_market.into_values().collect();
+        // closest-to-trigger market first
+        rows.sort_by(|a, b| b.2.max(b.3).partial_cmp(&a.2.max(a.3)).unwrap_or(std::cmp::Ordering::Equal));
         let trig = self.cfg.scanner_trigger_ask;
         let parts: Vec<String> = rows
             .iter()
-            .map(|(c, u, d)| {
-                let hot = if *u >= trig || *d >= trig { "🔥" } else { "" };
-                format!("{}{} U{:.3} D{:.3}", hot, c.to_uppercase(), u, d)
+            .take(12)
+            .map(|(coin, end_ts, u, d)| {
+                let valid = book_sane(u.max(*d), u.min(*d));
+                let hot = valid && ((*u >= trig && *u < 1.0) || (*d >= trig && *d < 1.0));
+                let mark = if hot { "🔥" } else if !valid { "⚠" } else { "" };
+                let hhmm = chrono::DateTime::from_timestamp(*end_ts as i64, 0)
+                    .map(|dt| dt.format("%H:%M").to_string())
+                    .unwrap_or_default();
+                format!("{}{}@{} U{:.3} D{:.3}", mark, coin.to_uppercase(), hhmm, u, d)
             })
             .collect();
-        info!("🔭 99c-scanner books (ask; trigger {:.2}): {}", trig, parts.join("  |  "));
+        info!("🔭 99c-scanner books (ask; trigger {:.2}; 🔥=tradable ⚠=bad book): {}", trig, parts.join("  |  "));
     }
 
     /// If `best_ask` is in [trigger, 1.0) and we haven't claimed this token yet,
@@ -399,6 +419,24 @@ impl Scanner {
             Some(i) => i,
             None => return, // not a token we're tracking
         };
+        // BOOK SANITY (demogui's _prices_sane binary invariant): only trade a coherent
+        // book. The two outcomes' best asks must both be real (0<ask<1) and sum to ≈1
+        // (≤ SANE_ASK_SUM_MAX). A side showing 1.000 (no real offer) or a sum far over 1
+        // means a stale/one-sided book — skip until it's correct.
+        let sister_ask = self.last_ask.lock().unwrap().get(&info.sister).copied().unwrap_or(0.0);
+        if !book_sane(best_ask, sister_ask) {
+            if self.skip_logged.lock().unwrap().insert(token.to_string()) {
+                info!(
+                    "🔭 99c-scanner: SKIP {} — book not valid (this ask {:.3} + other side {:.3} = {:.3}; need both 0<ask<1 and sum ≤ {:.2})",
+                    label(&info.title, &info.outcome, token),
+                    best_ask,
+                    sister_ask,
+                    best_ask + sister_ask,
+                    SANE_ASK_SUM_MAX
+                );
+            }
+            return;
+        }
         // DIRECTIONAL avoidance: the side we'd buy (Up or Down) must be clear on BOTH the
         // liquidity and FVG filters. Resistance above (high level / bearish FVG) blocks
         // Up; support below (low level / bullish FVG) blocks Down. Missing candle data =>
@@ -637,6 +675,13 @@ fn short(s: &str) -> &str {
     &s[..s.len().min(10)]
 }
 
+/// demogui's binary invariant: a coherent up/down book has both outcomes' best asks real
+/// (0 < ask < 1) and summing to ≈1 (≤ SANE_ASK_SUM_MAX). A 1.000 side (no real offer) or a
+/// sum well over 1 means a stale/one-sided book we shouldn't trade.
+fn book_sane(ask: f64, sister_ask: f64) -> bool {
+    ask > 0.0 && ask < 1.0 && sister_ask > 0.0 && sister_ask < 1.0 && (ask + sister_ask) <= SANE_ASK_SUM_MAX
+}
+
 /// Best ask from a WS `book` event's `asks` array = min price (order-independent).
 fn min_price(v: Option<&Value>) -> f64 {
     v.and_then(|x| x.as_array())
@@ -678,5 +723,20 @@ fn label(title: &str, outcome: &str, token: &str) -> String {
         format!("\"{t}\" [{id}]")
     } else {
         format!("\"{t}\" · {outcome} [{id}]")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn book_sanity_invariant() {
+        assert!(book_sane(0.99, 0.02)); // favorite 0.99 + loser 0.02 = 1.01 → ok
+        assert!(book_sane(0.52, 0.50)); // fresh ~50/50 = 1.02 → ok
+        assert!(!book_sane(1.0, 0.26)); // a 1.000 side = no real offer → bad
+        assert!(!book_sane(0.99, 0.0)); // sister ask missing → bad
+        assert!(!book_sane(0.99, 1.0)); // sister 1.000 → bad
+        assert!(!book_sane(0.74, 0.50)); // sum 1.24 > 1.10 → stale/one-sided
     }
 }
