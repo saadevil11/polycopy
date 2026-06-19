@@ -587,6 +587,44 @@ impl Scanner {
                 info!("🔭 99c-scanner: filled {:.2} sh in {} — holding to resolution ✅", matched, label(&rec.title, "", &token));
                 continue;
             }
+            // DIRECTIONAL CANCEL: a resting unfilled buy whose side a liquidity level / FVG
+            // now blocks is cancelled (we no longer want to enter that side). A partial fill
+            // becomes a held position the stop then manages. Only fires while the market is
+            // live (token in the discovery map) and the relevant filter is on.
+            let side = self
+                .view
+                .markets
+                .lock()
+                .unwrap()
+                .get(&token)
+                .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up")));
+            if let Some((asset, is_up)) = side {
+                let liq = self.liq.signal(&asset);
+                let fvg = self.fvg.signal(&asset);
+                let (liq_block, fvg_block) = if is_up {
+                    (liq.block_up, fvg.block_up)
+                } else {
+                    (liq.block_down, fvg.block_down)
+                };
+                if liq_block || fvg_block {
+                    let side_str = if is_up { "Up" } else { "Down" };
+                    let reason = match (liq_block, fvg_block) {
+                        (true, true) => "level + FVG".to_string(),
+                        (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
+                        _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
+                    };
+                    let _ = self.exec.cancel_confirmed(&rec.order_id, &token).await;
+                    let filled = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
+                    if filled > EPS {
+                        self.store.update_scan_status(&token, "FILLED");
+                        info!("🔭 99c-scanner: {} — {} hit {} while the buy rested; cancelled the rest, keeping {:.2} sh filled (stop manages)", label(&rec.title, side_str, &token), side_str, reason, filled);
+                    } else {
+                        self.store.update_scan_status(&token, "CANCELLED");
+                        info!("🔭 99c-scanner: {} — {} hit {} while a buy rested unfilled → cancelled it", label(&rec.title, side_str, &token), side_str, reason);
+                    }
+                    continue;
+                }
+            }
             let stale = self
                 .cfg
                 .ninetynine_buy_max_age
