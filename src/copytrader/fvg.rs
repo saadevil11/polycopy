@@ -12,10 +12,10 @@
 //! A gap is **mitigated** (dropped) once a later candle **closes** beyond its far edge
 //! (bull: close < zone.min; bear: close > zone.max) — the indicator's own rule.
 //!
-//! It emits a **directional** signal when the coin's current 5-minute candle **taps** an
-//! un-mitigated FVG pooled from 5m + 15m — the candle must have **opened outside** the gap
-//! and then **wicked into** it during the window (a candle that opened inside is not a
-//! tap). Tapping a **bearish** FVG (resistance) blocks buying **Up**; tapping a **bullish**
+//! It emits a **directional** signal when the coin's current 5-minute candle interacts with
+//! an un-mitigated FVG pooled from 5m + 15m — either it **opened INSIDE** the gap, OR it
+//! **opened outside** and **wicked into** it during the window. Hitting a **bearish** FVG
+//! (resistance) blocks buying **Up**; hitting a **bullish**
 //! FVG (support) blocks buying **Down**. Same data path as the liquidity
 //! filter: live price (forming-candle wick) via the Binance kline WebSocket, the slower
 //! FVG zones recomputed from REST every `SCANNER_LIQ_POLL_SECS`. Coins with no Binance
@@ -253,11 +253,10 @@ impl Fvg {
         s.cur_lo = cur_lo;
     }
 
-    /// Directional avoidance signal for this coin's current 5m window. The signal is a
-    /// fresh TAP: the 5m candle must have OPENED OUTSIDE an FVG and then wicked INTO it
-    /// during the window — a candle that merely opened inside a gap is NOT a signal.
-    ///   * tapped a **bearish** FVG (resistance / down-imbalance) → `block_up`,
-    ///   * tapped a **bullish** FVG (support / up-imbalance)       → `block_down`.
+    /// Directional avoidance signal for this coin's current 5m window. The 5m candle hits
+    /// an FVG if it OPENED INSIDE the gap, OR it opened outside and wicked INTO it.
+    ///   * hit a **bearish** FVG (resistance / down-imbalance) → `block_up`,
+    ///   * hit a **bullish** FVG (support / up-imbalance)       → `block_down`.
     /// `evaluable` is false when we can't judge (no Binance pair, or a timeframe not yet
     /// seeded); a disabled filter is trivially evaluable and blocks nothing.
     pub fn signal(&self, coin: &str) -> FilterSignal {
@@ -288,19 +287,23 @@ impl Fvg {
     }
 }
 
-/// True if the 5m candle TAPPED into an FVG band of the wanted direction this window: it
-/// **opened outside** the gap (open < min or open > max) and its range has now **reached
-/// in** (cur_hi ≥ min and cur_lo ≤ max). A candle that opened inside the gap is NOT a tap.
-/// cur_hi==0 / cur_open==0 → no live data → not a tap.
+/// True if the 5m candle interacts with an FVG band of the wanted direction this window,
+/// by EITHER rule:
+///   1. it **opened INSIDE** the gap (min ≤ open ≤ max), or
+///   2. it **opened outside** the gap and its range has since **wicked in** (cur_hi ≥ min
+///      and cur_lo ≤ max).
+/// cur_hi==0 / cur_open==0 → no live data → no block.
 fn tapped(cur_open: f64, cur_hi: f64, cur_lo: f64, zones: &[(f64, f64, bool)], want_bull: bool) -> bool {
     if cur_hi <= 0.0 || cur_open <= 0.0 {
         return false;
     }
     zones.iter().any(|&(min, max, is_bull)| {
-        is_bull == want_bull
-            && (cur_open < min || cur_open > max) // opened OUTSIDE the gap
-            && cur_hi >= min
-            && cur_lo <= max // and the range has since reached into it
+        if is_bull != want_bull {
+            return false;
+        }
+        let opened_inside = cur_open >= min && cur_open <= max;
+        let wicked_in = (cur_open < min || cur_open > max) && cur_hi >= min && cur_lo <= max;
+        opened_inside || wicked_in
     })
 }
 
@@ -425,21 +428,22 @@ mod tests {
     }
 
     #[test]
-    fn tapped_requires_open_outside_then_reach_in() {
+    fn tapped_blocks_opened_inside_or_wicked_in() {
         let bull = [(100.0, 103.0, true)]; // a bullish gap band (support)
         let bear = [(100.0, 103.0, false)]; // same band, bearish (resistance)
-        // opened ABOVE (104) then wicked DOWN into the bull gap → tap → block Down
+        // opened ABOVE (104) then wicked DOWN into the bull gap → block Down
         assert!(tapped(104.0, 104.5, 99.0, &bull, true));
-        // opened BELOW (99) then wicked UP into the bear gap → tap → block Up
+        // opened BELOW (99) then wicked UP into the bear gap → block Up
         assert!(tapped(99.0, 104.0, 98.5, &bear, false));
-        // opened INSIDE the gap (101.5) → NOT a tap, even though range overlaps
-        assert!(!tapped(101.5, 104.0, 99.0, &bull, true));
-        // opened outside but range never reached the gap → no tap
+        // opened INSIDE the gap → now ALSO blocks (the added rule)
+        assert!(tapped(101.5, 104.0, 99.0, &bull, true)); // opened inside, ranged out
+        assert!(tapped(101.5, 102.0, 101.0, &bull, true)); // opened inside, stayed inside
+        // opened outside and range never reached the gap → no block
         assert!(!tapped(110.0, 112.0, 104.0, &bull, true)); // stayed above
         assert!(!tapped(98.0, 99.5, 95.0, &bear, false)); // stayed below
-        // wrong direction → never blocks that side
-        assert!(!tapped(104.0, 104.5, 99.0, &bull, false)); // bull gap never blocks Up
-        assert!(!tapped(99.0, 104.0, 98.5, &bear, true)); // bear gap never blocks Down
+        // wrong direction → never blocks that side (even when opened inside)
+        assert!(!tapped(104.0, 104.5, 99.0, &bull, false));
+        assert!(!tapped(101.5, 104.0, 99.0, &bull, false));
         // no live data
         assert!(!tapped(0.0, 0.0, 0.0, &bull, true));
     }

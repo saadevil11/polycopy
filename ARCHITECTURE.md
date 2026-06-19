@@ -49,9 +49,9 @@ Two strategies, selected by env:
   dumped with a GTC sell at `SCANNER_EXIT_PRICE` (0.10) if **either** filter blocks the side
   we hold (held Up + high level/bearish FVG, or held Down + low level/bullish FVG). The live
   price (forming-candle wick) streams from the **Binance kline WebSocket**; the slower
-  levels/zones refresh from REST every `SCANNER_LIQ_POLL_SECS`. **FVG is a fresh TAP** (5m
-  candle opened OUTSIDE the gap then wicked IN — not merely "inside"), detected on CLOSED
-  candles only (confirmed 3rd candle; the forming candle is excluded). FVG significance:
+  levels/zones refresh from REST every `SCANNER_LIQ_POLL_SECS`. **FVG hit** = the 5m candle
+  opened INSIDE the gap OR opened outside and wicked IN; detected on CLOSED candles only
+  (confirmed 3rd candle; the forming candle is excluded). FVG significance:
   `SCANNER_FVG_AUTO` on by default → adaptive threshold `SCANNER_FVG_AUTO_FACTOR` × the coin's
   avg candle range (0.7 ≈ 4-6 gaps/coin; 1.0 = full auto ≈ 1-3; 0 = all); off → fixed
   `SCANNER_FVG_THRESHOLD_PCT`. Coins with no Binance USDT pair (HYPE) aren't traded while a filter is on.
