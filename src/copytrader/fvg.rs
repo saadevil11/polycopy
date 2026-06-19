@@ -209,7 +209,8 @@ impl Fvg {
     }
 
     async fn refresh(&self, coin: &str, tf: &str, sym: &str) {
-        let url = format!("{}/api/v3/klines?symbol={}&interval={}&limit={}", self.rest_url, sym, tf, LIMIT);
+        // USDT-margined perpetual (BTCUSDT.P) futures klines: fapi /fapi/v1/klines.
+        let url = format!("{}/fapi/v1/klines?symbol={}&interval={}&limit={}", self.rest_url, sym, tf, LIMIT);
         let v: Value = match self.http.get(&url).send().await {
             Ok(r) => match r.json().await {
                 Ok(v) => v,
@@ -219,7 +220,7 @@ impl Fvg {
                 }
             },
             Err(e) => {
-                warn!("🟦 fvg: Binance fetch {sym} {tf} failed ({e}) — check api.binance.com reachability/geo");
+                warn!("🟦 fvg: Binance futures fetch {sym} {tf} failed ({e}) — check fapi.binance.com reachability/geo");
                 return;
             }
         };
