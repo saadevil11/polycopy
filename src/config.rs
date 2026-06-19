@@ -69,8 +69,8 @@ pub struct Config {
     // are not traded while this is on.
     pub scanner_liquidity_filter: bool,
     pub scanner_liq_poll: Duration,     // Binance LEVELS refresh cadence (REST); the live price comes from the WS
-    pub binance_rest_url: String,       // Binance FUTURES host (fapi) — USDT-margined perps (BTCUSDT.P)
-    pub binance_ws_url: String,         // Binance futures combined kline stream (live forming-candle price)
+    pub binance_rest_url: String,       // Binance SPOT host (api) — closest proxy to Polymarket's Chainlink
+    pub binance_ws_url: String,         // Binance spot combined kline stream (live forming-candle price)
     // Fair-Value-Gap avoidance filter (LuxAlgo port): skip a 0.99 buy when the coin's
     // current 5m candle is inside an un-mitigated FVG on Binance 5m/15m. Runs ALONGSIDE
     // the liquidity filter — a market must be clear on BOTH to be bought.
@@ -228,8 +228,8 @@ impl Config {
             scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
             scanner_liquidity_filter: env_bool("SCANNER_LIQUIDITY_FILTER", true),
             scanner_liq_poll: Duration::from_secs(env_u64("SCANNER_LIQ_POLL_SECS", 15).max(2)),
-            binance_rest_url: env_str("BINANCE_REST_URL", "https://fapi.binance.com"),
-            binance_ws_url: env_str("BINANCE_WS_URL", "wss://fstream.binance.com/stream"),
+            binance_rest_url: env_str("BINANCE_REST_URL", "https://api.binance.com"),
+            binance_ws_url: env_str("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream"),
             scanner_fvg_filter: env_bool("SCANNER_FVG_FILTER", true),
             // Default: FIXED threshold (0 = the indicator's default, every gap counts). Set
             // a % to ignore tiny gaps, e.g. 0.05. Auto is OFF by default.
