@@ -4,8 +4,11 @@
 //! A 5-minute candle is a **doji** when its body is tiny relative to its range:
 //!   `|open - close| <= (high - low) * precision`   (indicator default precision = 0.15).
 //! A doji = indecision / a near-tie close — for a 99c up/down market that means the outcome
-//! is fragile and can flip, so we DON'T trade that market (block **both** Up and Down) and
-//! dump a held position if the candle turns doji.
+//! is fragile and can flip, so we DON'T enter that market (block **both** Up and Down).
+//! ENTRY-ONLY by design: the doji never dumps a HELD position. A near-tie is ~50/50, so
+//! dumping it at the exit floor would be -EV and can throw away a winner (a bullish doji
+//! that we hold Up on still has ~half its chance to pay the full 1.0). The liquidity/FVG
+//! stops (directional reversals) handle held positions; the doji only gates entry.
 //!
 //! The indicator only "fires" at candle CLOSE, but we don't need to wait: the Binance kline
 //! WebSocket streams the FORMING candle's open / high / low / **close (= current price)** on
@@ -81,7 +84,7 @@ impl Doji {
             return;
         }
         info!(
-            "🕯️ doji filter: ON — skip a 0.99 buy (and dump a held position) if {}'s current 5m candle is a doji (|open-close| ≤ {:.0}% of range); live via Binance WS",
+            "🕯️ doji filter: ON (ENTRY-ONLY, no stop) — skip a 0.99 buy if {}'s current 5m candle is a doji (|open-close| ≤ {:.0}% of range); live via Binance WS",
             self.coins.join("/"),
             self.precision * 100.0
         );

@@ -56,9 +56,10 @@ Two strategies, selected by env:
   `SCANNER_FVG_AUTO` (OFF by default) instead scales the threshold to `SCANNER_FVG_AUTO_FACTOR`
   × the coin's avg candle range. A `SCANNER_FILTER_BLANKET` toggle makes any level/FVG hit block
   BOTH sides. A third **doji filter** (`SCANNER_DOJI_FILTER`, `doji.rs`, "Doji signals" port,
-  NON-directional) blocks both sides + stops if the current 5m candle is a doji
-  (`|open-close| ≤ (high-low)·SCANNER_DOJI_PRECISION`, default 0.15) — evaluated live on the
-  forming candle (a near-tie close = 99c flip risk). Coins with no Binance USDT pair (HYPE)
+  NON-directional, **ENTRY-ONLY**) blocks both sides at entry if the current 5m candle is a
+  doji (`|open-close| ≤ (high-low)·SCANNER_DOJI_PRECISION`, default 0.15) — evaluated live on
+  the forming candle (a near-tie close = 99c flip risk). It does NOT stop/dump a held
+  position (a near-tie is ~50/50; dumping at the floor is -EV). Coins with no Binance USDT pair (HYPE)
   aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
