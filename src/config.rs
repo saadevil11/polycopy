@@ -75,8 +75,9 @@ pub struct Config {
     // current 5m candle is inside an un-mitigated FVG on Binance 5m/15m. Runs ALONGSIDE
     // the liquidity filter — a market must be clear on BOTH to be bought.
     pub scanner_fvg_filter: bool,
-    pub scanner_fvg_threshold_pct: f64, // min gap size as % of price (0 = any gap, the indicator default)
-    pub scanner_fvg_auto: bool,         // auto threshold = mean bar range (overrides the % when true)
+    pub scanner_fvg_threshold_pct: f64, // min gap size as % of price (used when auto is OFF; 0 = any gap)
+    pub scanner_fvg_auto: bool,         // adaptive threshold = auto_factor × the coin's avg candle range
+    pub scanner_fvg_auto_factor: f64,   // 1.0 = a full avg candle (few gaps), 0.7 = good middle, 0 = all
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -227,11 +228,12 @@ impl Config {
             binance_ws_url: env_str("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream"),
             scanner_fvg_filter: env_bool("SCANNER_FVG_FILTER", true),
             scanner_fvg_threshold_pct: env_f64("SCANNER_FVG_THRESHOLD_PCT", 0.0).max(0.0),
-            // Auto OFF by request — uses the literal % threshold below (0 = the indicator's
-            // default: every gap counts). Now that blocks are DIRECTIONAL (a bull gap only
-            // blocks Down, a bear gap only blocks Up) threshold 0 is workable; raise
-            // SCANNER_FVG_THRESHOLD_PCT (e.g. 0.05) if one side gets over-blocked.
-            scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", false),
+            // Adaptive threshold (default): ignore gaps smaller than AUTO_FACTOR × the
+            // coin's average candle range — per-coin normalized, unlike a fixed %. 1.0 = a
+            // full avg candle (too few, 1-3/coin); 0.7 = a clean middle (~4-6/coin); 0 = all
+            // gaps (the micro-gap flood). Set SCANNER_FVG_AUTO=false to use the fixed % above.
+            scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", true),
+            scanner_fvg_auto_factor: env_f64("SCANNER_FVG_AUTO_FACTOR", 0.7).max(0.0),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),

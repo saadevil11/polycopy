@@ -49,8 +49,9 @@ pub struct Fvg {
     rest_url: String,
     ws_url: String,
     poll: Duration,
-    thr: f64,  // gap threshold as a fraction of price (0 = any gap, the indicator default)
-    auto: bool, // auto threshold = mean bar range (overrides `thr` when true)
+    thr: f64,  // fixed gap threshold as a fraction of price (used when auto is off)
+    auto: bool, // adaptive threshold = auto_factor × the coin's avg candle range
+    auto_factor: f64, // 1.0 = a full avg candle, 0.7 = good middle, 0 = all gaps
     /// coins we filter (those with a Binance USDT pair).
     coins: Vec<String>,
     http: reqwest::Client,
@@ -78,6 +79,7 @@ impl Fvg {
             poll: cfg.scanner_liq_poll,
             thr: (cfg.scanner_fvg_threshold_pct / 100.0).max(0.0),
             auto: cfg.scanner_fvg_auto,
+            auto_factor: cfg.scanner_fvg_auto_factor.max(0.0),
             coins,
             http,
             series: Mutex::new(HashMap::new()),
@@ -92,10 +94,10 @@ impl Fvg {
             return;
         }
         info!(
-            "🟦 fvg filter: ON — skip a 0.99 buy if {}'s current 5m candle is inside an un-mitigated fair value gap on {} (threshold {}); live price via Binance WS, zones refreshed every {}s",
+            "🟦 fvg filter: ON — skip a 0.99 buy if {}'s current 5m candle TAPS (opened outside, wicked in) an un-mitigated fair value gap on {} (min size {}); live price via Binance WS, zones refreshed every {}s",
             self.coins.join("/"),
             TFS.join("/"),
-            if self.auto { "auto".to_string() } else { format!("{:.3}%", self.thr * 100.0) },
+            if self.auto { format!("auto ×{:.2} avg-candle", self.auto_factor) } else { format!("{:.3}%", self.thr * 100.0) },
             self.poll.as_secs()
         );
         let work: Vec<(String, &'static str, &'static str)> = self
@@ -240,7 +242,7 @@ impl Fvg {
         let cur_open = forming.get(1).and_then(num_f64).unwrap_or(0.0);
         let cur_hi = forming.get(2).and_then(num_f64).unwrap_or(0.0);
         let cur_lo = forming.get(3).and_then(num_f64).unwrap_or(0.0);
-        let zones = compute_fvgs(&bars, self.thr, self.auto);
+        let zones = compute_fvgs(&bars, self.thr, self.auto, self.auto_factor);
 
         let mut map = self.series.lock().unwrap();
         let s = map.entry(format!("{coin}:{tf}")).or_default();
@@ -303,9 +305,10 @@ fn tapped(cur_open: f64, cur_hi: f64, cur_lo: f64, zones: &[(f64, f64, bool)], w
 
 /// Active (un-mitigated) fair value gaps over closed `bars` (each `(high, low, close)`,
 /// oldest→newest). Port of "Fair Value Gap [LuxAlgo]" detect() + mitigation. `thr_pct` is
-/// the gap threshold as a fraction of price (0 = any gap); `auto` overrides it with the
-/// mean bar range. Returns surviving bands `(min, max, is_bullish)`.
-fn compute_fvgs(bars: &[(f64, f64, f64)], thr_pct: f64, auto: bool) -> Vec<(f64, f64, bool)> {
+/// the fixed gap threshold as a fraction of price (used when `auto` is false). When `auto`
+/// is true the threshold is `auto_factor × mean((high-low)/low)` — i.e. ignore gaps smaller
+/// than that fraction of the coin's average candle range. Returns `(min, max, is_bullish)`.
+fn compute_fvgs(bars: &[(f64, f64, f64)], thr_pct: f64, auto: bool, auto_factor: f64) -> Vec<(f64, f64, bool)> {
     let n = bars.len();
     if n < 3 {
         return Vec::new();
@@ -318,7 +321,8 @@ fn compute_fvgs(bars: &[(f64, f64, f64)], thr_pct: f64, auto: bool) -> Vec<(f64,
                 cnt += 1.0;
             }
         }
-        if cnt > 0.0 { sum / cnt } else { 0.0 }
+        let mean = if cnt > 0.0 { sum / cnt } else { 0.0 };
+        auto_factor * mean
     } else {
         thr_pct
     };
@@ -382,13 +386,13 @@ mod tests {
             (105.0, 101.0, 104.0), // i-1: close=104 > 100
             (110.0, 103.0, 108.0), // i:   low=103 > 100 -> bull FVG [100,103]
         ];
-        let z = compute_fvgs(&bars, 0.0, false);
+        let z = compute_fvgs(&bars, 0.0, false, 1.0);
         assert_eq!(z, vec![(100.0, 103.0, true)]); // bullish
 
         // Mitigate: a later candle closes below the zone min (100).
         let mut bars2 = bars.clone();
         bars2.push((104.0, 96.0, 99.0)); // close=99 < 100 -> bull mitigated
-        assert!(compute_fvgs(&bars2, 0.0, false).is_empty());
+        assert!(compute_fvgs(&bars2, 0.0, false, 1.0).is_empty());
     }
 
     #[test]
@@ -398,13 +402,13 @@ mod tests {
             (105.0, 101.0, 102.0), // i-1: close=102 < 108
             (100.0, 96.0, 98.0),   // i:   high=100 < 108 -> bear FVG [100,108]
         ];
-        let z = compute_fvgs(&bars, 0.0, false);
+        let z = compute_fvgs(&bars, 0.0, false, 1.0);
         assert_eq!(z, vec![(100.0, 108.0, false)]); // bearish
 
         // Mitigate: a later candle closes above the zone max (108).
         let mut bars2 = bars.clone();
         bars2.push((112.0, 104.0, 110.0)); // close=110 > 108 -> bear mitigated
-        assert!(compute_fvgs(&bars2, 0.0, false).is_empty());
+        assert!(compute_fvgs(&bars2, 0.0, false, 1.0).is_empty());
     }
 
     #[test]
@@ -415,8 +419,8 @@ mod tests {
             (105.0, 101.0, 104.0),
             (110.0, 103.0, 108.0),
         ];
-        assert!(compute_fvgs(&bars, 0.05, false).is_empty()); // 3% < 5% threshold
-        assert_eq!(compute_fvgs(&bars, 0.01, false), vec![(100.0, 103.0, true)]); // 3% > 1%
+        assert!(compute_fvgs(&bars, 0.05, false, 1.0).is_empty()); // 3% < 5% threshold
+        assert_eq!(compute_fvgs(&bars, 0.01, false, 1.0), vec![(100.0, 103.0, true)]); // 3% > 1%
     }
 
     #[test]
