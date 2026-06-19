@@ -298,13 +298,15 @@ impl Store {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
-    /// All scanner records: token -> (status, buy_price). For the dashboard order overlay.
-    pub fn scan_all(&self) -> std::collections::HashMap<String, (String, f64)> {
+    /// All scanner records: token -> (status, buy_price, order_id). For the dashboard
+    /// order overlay (order_id distinguishes a real resting order from a not-yet-placed
+    /// claim or a `dryrun-…` simulated order).
+    pub fn scan_all(&self) -> std::collections::HashMap<String, (String, f64, String)> {
         self.scanner
             .lock()
             .unwrap()
             .iter()
-            .map(|(k, v)| (k.clone(), (v.status.clone(), v.buy_price)))
+            .map(|(k, v)| (k.clone(), (v.status.clone(), v.buy_price, v.order_id.clone())))
             .collect()
     }
     /// Drop terminal scanner records (FILLED/CANCELLED/EXITED) whose buy was placed

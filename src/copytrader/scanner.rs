@@ -171,13 +171,13 @@ impl Scanner {
     /// by slug: the current + next 300s windows for each asset, one batched request).
     async fn discover(&self) {
         let now = chrono::Utc::now().timestamp().max(0) as u64;
-        // The `<asset>-updown-5m-<ts>` slug ts is the window's START (it ends at ts+300).
-        // The market converging toward 0.99 is the IN-PROGRESS window (start = now floored
-        // to 300), and the just-resolved one can still be settling at ~0.99 while it accepts
-        // orders. Watch resolving + in-progress + next (pre-subscribe); Gamma's live flags
-        // drop any that aren't actually tradable.
+        // ONE market per coin: the CURRENT in-progress window (slug ts = now floored to
+        // 300; it ends at ts+300). When the window ends we move to the next on the next
+        // discovery — and because the markets map isn't replaced until then, we keep
+        // watching a just-ended market for up to one discovery interval while it settles
+        // toward 0.99, so the edge entry isn't missed despite tracking only "the current".
         let base = (now / 300) * 300;
-        let windows = [base.saturating_sub(300), base, base + 300];
+        let windows = [base];
         let mut query: Vec<(&str, String)> = Vec::new();
         for a in self.assets() {
             for w in windows {
@@ -691,11 +691,13 @@ fn short(s: &str) -> &str {
     &s[..s.len().min(10)]
 }
 
-/// demogui's binary invariant: a coherent up/down book has both outcomes' best asks real
-/// (0 < ask < 1) and summing to ≈1 (≤ SANE_ASK_SUM_MAX). A 1.000 side (no real offer) or a
-/// sum well over 1 means a stale/one-sided book we shouldn't trade.
+/// demogui's binary invariant (`_prices_sane`): a coherent up/down book has both outcomes'
+/// best asks present (> 0) and summing to ≈1 (≤ SANE_ASK_SUM_MAX). We do NOT require each
+/// ask < 1.0 — a settling market with one side at 1.000 and the other near 0 still sums to
+/// ~1 and is a real book (just not buyable on the 1.000 side; the < 1.0 trigger handles
+/// that). Only a sum well over 1 (one-sided / stale / crossed) is rejected.
 fn book_sane(ask: f64, sister_ask: f64) -> bool {
-    ask > 0.0 && ask < 1.0 && sister_ask > 0.0 && sister_ask < 1.0 && (ask + sister_ask) <= SANE_ASK_SUM_MAX
+    ask > 0.0 && sister_ask > 0.0 && (ask + sister_ask) <= SANE_ASK_SUM_MAX
 }
 
 /// Best ask from a WS `book` event's `asks` array = min price (order-independent).
@@ -750,9 +752,10 @@ mod tests {
     fn book_sanity_invariant() {
         assert!(book_sane(0.99, 0.02)); // favorite 0.99 + loser 0.02 = 1.01 → ok
         assert!(book_sane(0.52, 0.50)); // fresh ~50/50 = 1.02 → ok
-        assert!(!book_sane(1.0, 0.26)); // a 1.000 side = no real offer → bad
+        assert!(book_sane(0.05, 1.0)); // settling: one side 1.000, sum 1.05 ≤ 1.10 → OK now
+        assert!(!book_sane(1.0, 0.26)); // sum 1.26 > 1.10 → one-sided/stale
         assert!(!book_sane(0.99, 0.0)); // sister ask missing → bad
-        assert!(!book_sane(0.99, 1.0)); // sister 1.000 → bad
+        assert!(!book_sane(0.99, 1.0)); // sum 1.99 > 1.10 → bad
         assert!(!book_sane(0.74, 0.50)); // sum 1.24 > 1.10 → stale/one-sided
     }
 }

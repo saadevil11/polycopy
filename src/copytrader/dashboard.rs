@@ -115,8 +115,12 @@ struct ScanSnap {
     cards: Vec<ScanCard>,
 }
 
-fn status_label(s: &str) -> String {
-    match s {
+fn status_label(status: &str, order_id: &str) -> String {
+    match status {
+        // A claim with no order id yet = placement in flight (no real order on the book).
+        "ACTIVE" if order_id.is_empty() => "placing",
+        // dryrun-… = DRY_RUN simulated; there is NO real order on Polymarket.
+        "ACTIVE" if order_id.starts_with("dryrun-") => "dry-run",
         "ACTIVE" => "resting",
         "FILLED" => "holding",
         "EXITED" => "exited",
@@ -141,7 +145,7 @@ async fn api_scanner(State(ctx): State<Ctx>) -> Json<ScanSnap> {
             let ask = asks.get(token).copied().unwrap_or(0.0);
             let (status, buy) = orders
                 .get(token)
-                .map(|(s, b)| (status_label(s), *b))
+                .map(|(s, b, oid)| (status_label(s, oid), *b))
                 .unwrap_or((String::new(), 0.0));
             let card = by_slug.entry(info.market.clone()).or_insert_with(|| ScanCard {
                 coin: info.asset.to_uppercase(),
@@ -169,7 +173,9 @@ async fn api_scanner(State(ctx): State<Ctx>) -> Json<ScanSnap> {
     let mut cards: Vec<ScanCard> = by_slug
         .into_values()
         .map(|mut c| {
-            c.valid = c.up_ask > 0.0 && c.up_ask < 1.0 && c.down_ask > 0.0 && c.down_ask < 1.0 && (c.up_ask + c.down_ask) <= 1.10;
+            // demogui binary invariant: both asks present and sum ≈1 (≤1.10). A 1.000 side
+            // (settling) is still a valid book — we don't require each ask < 1.0.
+            c.valid = c.up_ask > 0.0 && c.down_ask > 0.0 && (c.up_ask + c.down_ask) <= 1.10;
             c
         })
         .collect();
@@ -215,6 +221,7 @@ td{padding:11px 16px;border-bottom:1px solid var(--line)}tr:last-child td{border
 .ask{font-variant-numeric:tabular-nums;font-weight:700;width:48px;text-align:right}.ask.t{color:var(--grn)}
 .ostat{font-size:10px;padding:2px 6px;border-radius:6px;font-weight:700;margin-left:7px}
 .s-resting{background:#6d8bff22;color:var(--acc)}.s-holding{background:#27d3a222;color:var(--grn)}.s-exited,.s-cancelled{background:#ff5d7322;color:var(--red)}
+.s-placing{background:#8a96b322;color:var(--mut)}.s-dry-run{background:#ffb02e22;color:#ffb02e}
 </style></head><body><div class="wrap">
 <header><div class="brand"><div class="logo">P</div><div><div style="font-weight:600;font-size:17px">Copytrader (Rust)</div><div class="mut" style="font-size:11.5px" id="target">—</div></div></div>
 <div class="pills"><span class="pill"><span class="dot"></span><span id="mode">—</span></span><span class="pill" id="src">—</span><span class="pill" id="dry">—</span><span class="pill" id="up">—</span></div></header>
