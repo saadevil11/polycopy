@@ -29,6 +29,7 @@ use crate::clob::executor::Executor;
 use crate::clob::signing::{snap_price, SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
 use crate::copytrader::fvg::Fvg;
+use crate::copytrader::FilterSignal;
 use crate::copytrader::liquidity::Liquidity;
 use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
 
@@ -125,6 +126,9 @@ impl Scanner {
                 None => "off".into(),
             }
         );
+        if st.cfg.scanner_filter_blanket {
+            info!("🔭 99c-scanner: filter mode = BLANKET — any liquidity level / FVG hit blocks BOTH sides (no up, no down)");
+        }
 
         // Initial discovery so the first WS connect has tokens; resume persisted state.
         st.discover().await;
@@ -452,35 +456,38 @@ impl Scanner {
             }
             return;
         }
-        // DIRECTIONAL avoidance: the side we'd buy (Up or Down) must be clear on BOTH the
-        // liquidity and FVG filters. Resistance above (high level / bearish FVG) blocks
-        // Up; support below (low level / bullish FVG) blocks Down. Missing candle data =>
-        // not evaluable => skip (we don't trade what we can't judge).
+        // Avoidance: the side we'd buy must be clear on BOTH the liquidity and FVG filters.
+        // Directional (default): resistance (high level / bearish FVG) blocks Up; support
+        // (low level / bullish FVG) blocks Down. BLANKET (SCANNER_FILTER_BLANKET): ANY
+        // hit blocks BOTH sides. Missing candle data => not evaluable => skip.
         let is_up = info.outcome.eq_ignore_ascii_case("up");
+        let blanket = self.cfg.scanner_filter_blanket;
         let liq = self.liq.signal(&info.asset);
         let fvg = self.fvg.signal(&info.asset);
         let evaluable = liq.evaluable && fvg.evaluable;
-        let (liq_block, fvg_block) = if is_up {
-            (liq.block_up, fvg.block_up)
-        } else {
-            (liq.block_down, fvg.block_down)
-        };
+        let liq_block = signal_blocks(&liq, is_up, blanket);
+        let fvg_block = signal_blocks(&fvg, is_up, blanket);
         if !evaluable || liq_block || fvg_block {
             if self.skip_logged.lock().unwrap().insert(token.to_string()) {
                 let reason = if !evaluable {
                     "no Binance candle data yet (or no pair)".to_string()
+                } else if blanket {
+                    let mut why: Vec<&str> = Vec::new();
+                    if liq_block {
+                        why.push("a liquidity level");
+                    }
+                    if fvg_block {
+                        why.push("an FVG");
+                    }
+                    format!("market hit {} — no trade (both sides blocked)", why.join(" + "))
                 } else {
                     let side = if is_up { "Up" } else { "Down" };
                     let mut why: Vec<&str> = Vec::new();
-                    match (is_up, liq_block) {
-                        (true, true) => why.push("at a high level"),
-                        (false, true) => why.push("at a low level"),
-                        _ => {}
+                    if liq_block {
+                        why.push(if is_up { "at a high level" } else { "at a low level" });
                     }
-                    match (is_up, fvg_block) {
-                        (true, true) => why.push("in a bearish FVG"),
-                        (false, true) => why.push("in a bullish FVG"),
-                        _ => {}
+                    if fvg_block {
+                        why.push(if is_up { "in a bearish FVG" } else { "in a bullish FVG" });
                     }
                     format!("buying {side} blocked — {}", why.join(" + "))
                 };
@@ -601,19 +608,25 @@ impl Scanner {
                 .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up"), i.end_ts));
             if let Some((asset, is_up, end_ts)) = info {
                 if (now_ms() / 1000) < end_ts {
+                    let blanket = self.cfg.scanner_filter_blanket;
                     let liq = self.liq.signal(&asset);
                     let fvg = self.fvg.signal(&asset);
-                    let (liq_block, fvg_block) = if is_up {
-                        (liq.block_up, fvg.block_up)
-                    } else {
-                        (liq.block_down, fvg.block_down)
-                    };
+                    let liq_block = signal_blocks(&liq, is_up, blanket);
+                    let fvg_block = signal_blocks(&fvg, is_up, blanket);
                     if liq_block || fvg_block {
                         let side_str = if is_up { "Up" } else { "Down" };
-                        let reason = match (liq_block, fvg_block) {
-                            (true, true) => "level + FVG".to_string(),
-                            (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
-                            _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
+                        let reason = if blanket {
+                            match (liq_block, fvg_block) {
+                                (true, true) => "a level + FVG".to_string(),
+                                (true, false) => "a liquidity level".to_string(),
+                                _ => "an FVG".to_string(),
+                            }
+                        } else {
+                            match (liq_block, fvg_block) {
+                                (true, true) => "level + FVG".to_string(),
+                                (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
+                                _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
+                            }
                         };
                         let _ = self.exec.cancel_confirmed(&rec.order_id, &token).await;
                         let filled = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
@@ -673,23 +686,33 @@ impl Scanner {
                     continue;
                 }
                 // signal() returns no blocks when a filter is disabled or has no data.
+                // Blanket mode dumps on ANY hit (either side); directional only on our side.
+                let blanket = self.cfg.scanner_filter_blanket;
                 let liq = self.liq.signal(&asset);
                 let fvg = self.fvg.signal(&asset);
-                let (liq_hit, fvg_hit) = if is_up {
-                    (liq.block_up, fvg.block_up)
-                } else {
-                    (liq.block_down, fvg.block_down)
-                };
+                let liq_hit = signal_blocks(&liq, is_up, blanket);
+                let fvg_hit = signal_blocks(&fvg, is_up, blanket);
                 if !liq_hit && !fvg_hit {
                     continue;
                 }
                 let side = if is_up { "Up" } else { "Down" };
-                let level_word = if is_up { "a high level" } else { "a low level" };
-                let fvg_word = if is_up { "a bearish FVG" } else { "a bullish FVG" };
-                let what = match (liq_hit, fvg_hit) {
-                    (true, true) => format!("held {side} hit {level_word} + {fvg_word}"),
-                    (true, false) => format!("held {side} hit {level_word}"),
-                    _ => format!("held {side} hit {fvg_word}"),
+                let what = if blanket {
+                    let mut w: Vec<&str> = Vec::new();
+                    if liq_hit {
+                        w.push("a liquidity level");
+                    }
+                    if fvg_hit {
+                        w.push("an FVG");
+                    }
+                    format!("held {side}; market hit {}", w.join(" + "))
+                } else {
+                    let level_word = if is_up { "a high level" } else { "a low level" };
+                    let fvg_word = if is_up { "a bearish FVG" } else { "a bullish FVG" };
+                    match (liq_hit, fvg_hit) {
+                        (true, true) => format!("held {side} hit {level_word} + {fvg_word}"),
+                        (true, false) => format!("held {side} hit {level_word}"),
+                        _ => format!("held {side} hit {fvg_word}"),
+                    }
                 };
                 let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
                 if held < MIN_SHARES {
@@ -743,6 +766,19 @@ fn short(s: &str) -> &str {
 /// ask < 1.0 — a settling market with one side at 1.000 and the other near 0 still sums to
 /// ~1 and is a real book (just not buyable on the 1.000 side; the < 1.0 trigger handles
 /// that). Only a sum well over 1 (one-sided / stale / crossed) is rejected.
+/// Whether a filter signal should block this trade. Directional (default): only the side
+/// being traded (Up ← resistance, Down ← support). Blanket (SCANNER_FILTER_BLANKET on):
+/// ANY hit on either side blocks — no Up, no Down on that market.
+fn signal_blocks(sig: &FilterSignal, is_up: bool, blanket: bool) -> bool {
+    if blanket {
+        sig.block_up || sig.block_down
+    } else if is_up {
+        sig.block_up
+    } else {
+        sig.block_down
+    }
+}
+
 fn book_sane(ask: f64, sister_ask: f64) -> bool {
     ask > 0.0 && sister_ask > 0.0 && (ask + sister_ask) <= SANE_ASK_SUM_MAX
 }
