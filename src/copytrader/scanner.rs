@@ -589,40 +589,43 @@ impl Scanner {
             }
             // DIRECTIONAL CANCEL: a resting unfilled buy whose side a liquidity level / FVG
             // now blocks is cancelled (we no longer want to enter that side). A partial fill
-            // becomes a held position the stop then manages. Only fires while the market is
-            // live (token in the discovery map) and the relevant filter is on.
-            let side = self
+            // becomes a held position the stop then manages. ONLY while the market's 5m
+            // window is still LIVE (now < end) — after it ends the live candle belongs to the
+            // NEXT window, so a tap there is irrelevant to this market.
+            let info = self
                 .view
                 .markets
                 .lock()
                 .unwrap()
                 .get(&token)
-                .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up")));
-            if let Some((asset, is_up)) = side {
-                let liq = self.liq.signal(&asset);
-                let fvg = self.fvg.signal(&asset);
-                let (liq_block, fvg_block) = if is_up {
-                    (liq.block_up, fvg.block_up)
-                } else {
-                    (liq.block_down, fvg.block_down)
-                };
-                if liq_block || fvg_block {
-                    let side_str = if is_up { "Up" } else { "Down" };
-                    let reason = match (liq_block, fvg_block) {
-                        (true, true) => "level + FVG".to_string(),
-                        (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
-                        _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
-                    };
-                    let _ = self.exec.cancel_confirmed(&rec.order_id, &token).await;
-                    let filled = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
-                    if filled > EPS {
-                        self.store.update_scan_status(&token, "FILLED");
-                        info!("🔭 99c-scanner: {} — {} hit {} while the buy rested; cancelled the rest, keeping {:.2} sh filled (stop manages)", label(&rec.title, side_str, &token), side_str, reason, filled);
+                .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up"), i.end_ts));
+            if let Some((asset, is_up, end_ts)) = info {
+                if (now_ms() / 1000) < end_ts {
+                    let liq = self.liq.signal(&asset);
+                    let fvg = self.fvg.signal(&asset);
+                    let (liq_block, fvg_block) = if is_up {
+                        (liq.block_up, fvg.block_up)
                     } else {
-                        self.store.update_scan_status(&token, "CANCELLED");
-                        info!("🔭 99c-scanner: {} — {} hit {} while a buy rested unfilled → cancelled it", label(&rec.title, side_str, &token), side_str, reason);
+                        (liq.block_down, fvg.block_down)
+                    };
+                    if liq_block || fvg_block {
+                        let side_str = if is_up { "Up" } else { "Down" };
+                        let reason = match (liq_block, fvg_block) {
+                            (true, true) => "level + FVG".to_string(),
+                            (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
+                            _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
+                        };
+                        let _ = self.exec.cancel_confirmed(&rec.order_id, &token).await;
+                        let filled = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
+                        if filled > EPS {
+                            self.store.update_scan_status(&token, "FILLED");
+                            info!("🔭 99c-scanner: {} — {} hit {} while the buy rested; cancelled the rest, keeping {:.2} sh filled (stop manages)", label(&rec.title, side_str, &token), side_str, reason, filled);
+                        } else {
+                            self.store.update_scan_status(&token, "CANCELLED");
+                            info!("🔭 99c-scanner: {} — {} hit {} while a buy rested unfilled → cancelled it", label(&rec.title, side_str, &token), side_str, reason);
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
             let stale = self
@@ -652,17 +655,23 @@ impl Scanner {
             for (token, rec) in self.store.scan_filled() {
                 // asset+side are only known while the market is live (in the discovery
                 // map); once it resolves the token drops out and the position settles.
-                let (asset, is_up) = match self
+                let (asset, is_up, end_ts) = match self
                     .view
                     .markets
                     .lock()
                     .unwrap()
                     .get(&token)
-                    .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up")))
+                    .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up"), i.end_ts))
                 {
                     Some(x) => x,
                     None => continue,
                 };
+                // Only stop while the market's 5m window is still LIVE. Once it ends the
+                // outcome is locked and the live candle is the NEXT window's — a tap there
+                // must NOT dump this position (it just rides to resolution now).
+                if (now_ms() / 1000) >= end_ts {
+                    continue;
+                }
                 // signal() returns no blocks when a filter is disabled or has no data.
                 let liq = self.liq.signal(&asset);
                 let fvg = self.fvg.signal(&asset);
