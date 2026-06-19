@@ -11,6 +11,7 @@
 pub mod autosell;
 pub mod brownfox;
 pub mod dashboard;
+pub mod doji;
 pub mod fvg;
 pub mod liquidity;
 pub mod monitor;

@@ -54,7 +54,12 @@ Two strategies, selected by env:
   (confirmed 3rd candle; the forming candle is excluded). FVG significance: fixed
   `SCANNER_FVG_THRESHOLD_PCT` (default 0 = every gap; raise to ignore tiny ones). Optional
   `SCANNER_FVG_AUTO` (OFF by default) instead scales the threshold to `SCANNER_FVG_AUTO_FACTOR`
-  × the coin's avg candle range. Coins with no Binance USDT pair (HYPE) aren't traded while a filter is on.
+  × the coin's avg candle range. A `SCANNER_FILTER_BLANKET` toggle makes any level/FVG hit block
+  BOTH sides. A third **doji filter** (`SCANNER_DOJI_FILTER`, `doji.rs`, "Doji signals" port,
+  NON-directional) blocks both sides + stops if the current 5m candle is a doji
+  (`|open-close| ≤ (high-low)·SCANNER_DOJI_PRECISION`, default 0.15) — evaluated live on the
+  forming candle (a near-tie close = 99c flip risk). Coins with no Binance USDT pair (HYPE)
+  aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels
@@ -180,6 +185,7 @@ src/
     scanner.rs            99c order-book scanner: no target; CLOB market WS, buy 0.99 when ask hits it
     liquidity.rs          Binance 5m/15m/30m swing-level filter (Sonarlab port); skip 0.99 if price at a level
     fvg.rs                Binance 5m/15m fair-value-gap filter (LuxAlgo port); skip 0.99 if price in an FVG
+    doji.rs               Binance 5m doji filter (non-directional); skip/stop if the 5m candle is a doji
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer
@@ -206,7 +212,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
 liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels/FVG cadence),
 `BINANCE_REST_URL`, `BINANCE_WS_URL` (live price); FVG filter `SCANNER_FVG_FILTER`,
-`SCANNER_FVG_AUTO` (default true), `SCANNER_FVG_THRESHOLD_PCT`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`SCANNER_FVG_AUTO`, `SCANNER_FVG_THRESHOLD_PCT`; blanket `SCANNER_FILTER_BLANKET`; doji
+`SCANNER_DOJI_FILTER`, `SCANNER_DOJI_PRECISION`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

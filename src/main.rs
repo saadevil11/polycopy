@@ -66,9 +66,11 @@ async fn main() -> Result<()> {
                 tokio::spawn(liq.clone().run());
                 let fvg = Arc::new(copytrader::fvg::Fvg::new(&cfg));
                 tokio::spawn(fvg.clone().run());
+                let doji = Arc::new(copytrader::doji::Doji::new(&cfg));
+                tokio::spawn(doji.clone().run());
                 let view = copytrader::scanner::ScannerView::new();
                 scanner_view = Some(view.clone());
-                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone(), liq, fvg, view);
+                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone(), liq, fvg, doji, view);
                 tokio::spawn(sc.run());
             }
             None => tracing::warn!("99c-scanner needs PRIVATE_KEY/auth — nothing to do"),

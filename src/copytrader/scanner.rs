@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::clob::executor::Executor;
 use crate::clob::signing::{snap_price, SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
+use crate::copytrader::doji::Doji;
 use crate::copytrader::fvg::Fvg;
 use crate::copytrader::FilterSignal;
 use crate::copytrader::liquidity::Liquidity;
@@ -72,6 +73,7 @@ pub struct Scanner {
     store: Arc<Store>,
     liq: Arc<Liquidity>,
     fvg: Arc<Fvg>,
+    doji: Arc<Doji>,
     /// live markets (token -> info) + latest best ask per token — shared with the dashboard.
     view: Arc<ScannerView>,
     /// bumped whenever the live token SET changes, so the WS reconnects with it.
@@ -83,7 +85,7 @@ pub struct Scanner {
 }
 
 impl Scanner {
-    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>, fvg: Arc<Fvg>, view: Arc<ScannerView>) -> Self {
+    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>, fvg: Arc<Fvg>, doji: Arc<Doji>, view: Arc<ScannerView>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent("polybotshadow/0.1")
@@ -96,6 +98,7 @@ impl Scanner {
             store,
             liq,
             fvg,
+            doji,
             view,
             generation: AtomicU64::new(0),
             skip_logged: Mutex::new(HashSet::new()),
@@ -464,10 +467,12 @@ impl Scanner {
         let blanket = self.cfg.scanner_filter_blanket;
         let liq = self.liq.signal(&info.asset);
         let fvg = self.fvg.signal(&info.asset);
-        let evaluable = liq.evaluable && fvg.evaluable;
+        let doji = self.doji.signal(&info.asset); // non-directional: a doji blocks both sides
+        let evaluable = liq.evaluable && fvg.evaluable && doji.evaluable;
         let liq_block = signal_blocks(&liq, is_up, blanket);
         let fvg_block = signal_blocks(&fvg, is_up, blanket);
-        if !evaluable || liq_block || fvg_block {
+        let doji_block = signal_blocks(&doji, is_up, blanket);
+        if !evaluable || liq_block || fvg_block || doji_block {
             if self.skip_logged.lock().unwrap().insert(token.to_string()) {
                 let reason = if !evaluable {
                     "no Binance candle data yet (or no pair)".to_string()
@@ -479,15 +484,21 @@ impl Scanner {
                     if fvg_block {
                         why.push("an FVG");
                     }
+                    if doji_block {
+                        why.push("a doji candle");
+                    }
                     format!("market hit {} — no trade (both sides blocked)", why.join(" + "))
                 } else {
                     let side = if is_up { "Up" } else { "Down" };
-                    let mut why: Vec<&str> = Vec::new();
+                    let mut why: Vec<String> = Vec::new();
                     if liq_block {
-                        why.push(if is_up { "at a high level" } else { "at a low level" });
+                        why.push(if is_up { "at a high level".into() } else { "at a low level".into() });
                     }
                     if fvg_block {
-                        why.push(if is_up { "in a bearish FVG" } else { "in a bullish FVG" });
+                        why.push(if is_up { "in a bearish FVG".into() } else { "in a bullish FVG".into() });
+                    }
+                    if doji_block {
+                        why.push("the 5m candle is a doji".into());
                     }
                     format!("buying {side} blocked — {}", why.join(" + "))
                 };
@@ -611,23 +622,23 @@ impl Scanner {
                     let blanket = self.cfg.scanner_filter_blanket;
                     let liq = self.liq.signal(&asset);
                     let fvg = self.fvg.signal(&asset);
+                    let doji = self.doji.signal(&asset);
                     let liq_block = signal_blocks(&liq, is_up, blanket);
                     let fvg_block = signal_blocks(&fvg, is_up, blanket);
-                    if liq_block || fvg_block {
+                    let doji_block = signal_blocks(&doji, is_up, blanket);
+                    if liq_block || fvg_block || doji_block {
                         let side_str = if is_up { "Up" } else { "Down" };
-                        let reason = if blanket {
-                            match (liq_block, fvg_block) {
-                                (true, true) => "a level + FVG".to_string(),
-                                (true, false) => "a liquidity level".to_string(),
-                                _ => "an FVG".to_string(),
-                            }
-                        } else {
-                            match (liq_block, fvg_block) {
-                                (true, true) => "level + FVG".to_string(),
-                                (true, false) => format!("a {} level", if is_up { "high" } else { "low" }),
-                                _ => format!("a {} FVG", if is_up { "bearish" } else { "bullish" }),
-                            }
-                        };
+                        let mut why: Vec<&str> = Vec::new();
+                        if liq_block {
+                            why.push("a liquidity level");
+                        }
+                        if fvg_block {
+                            why.push("an FVG");
+                        }
+                        if doji_block {
+                            why.push("a doji");
+                        }
+                        let reason = why.join(" + ");
                         let _ = self.exec.cancel_confirmed(&rec.order_id, &token).await;
                         let filled = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
                         if filled > EPS {
@@ -690,30 +701,25 @@ impl Scanner {
                 let blanket = self.cfg.scanner_filter_blanket;
                 let liq = self.liq.signal(&asset);
                 let fvg = self.fvg.signal(&asset);
+                let doji = self.doji.signal(&asset);
                 let liq_hit = signal_blocks(&liq, is_up, blanket);
                 let fvg_hit = signal_blocks(&fvg, is_up, blanket);
-                if !liq_hit && !fvg_hit {
+                let doji_hit = signal_blocks(&doji, is_up, blanket);
+                if !liq_hit && !fvg_hit && !doji_hit {
                     continue;
                 }
                 let side = if is_up { "Up" } else { "Down" };
-                let what = if blanket {
-                    let mut w: Vec<&str> = Vec::new();
-                    if liq_hit {
-                        w.push("a liquidity level");
-                    }
-                    if fvg_hit {
-                        w.push("an FVG");
-                    }
-                    format!("held {side}; market hit {}", w.join(" + "))
-                } else {
-                    let level_word = if is_up { "a high level" } else { "a low level" };
-                    let fvg_word = if is_up { "a bearish FVG" } else { "a bullish FVG" };
-                    match (liq_hit, fvg_hit) {
-                        (true, true) => format!("held {side} hit {level_word} + {fvg_word}"),
-                        (true, false) => format!("held {side} hit {level_word}"),
-                        _ => format!("held {side} hit {fvg_word}"),
-                    }
-                };
+                let mut w: Vec<String> = Vec::new();
+                if liq_hit {
+                    w.push(if blanket { "a liquidity level".into() } else if is_up { "a high level".into() } else { "a low level".into() });
+                }
+                if fvg_hit {
+                    w.push(if blanket { "an FVG".into() } else if is_up { "a bearish FVG".into() } else { "a bullish FVG".into() });
+                }
+                if doji_hit {
+                    w.push("a doji candle".into());
+                }
+                let what = format!("held {side} hit {}", w.join(" + "));
                 let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
                 if held < MIN_SHARES {
                     held = size; // fallback to the configured size; exchange caps at balance

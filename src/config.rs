@@ -82,6 +82,11 @@ pub struct Config {
     // market (no Up, no Down) instead of only the directional side. Applies to entry,
     // the resting-buy cancel, and the held-position stop.
     pub scanner_filter_blanket: bool,
+    // Doji filter (non-directional): a 5m candle whose body is tiny vs its range
+    // (|open-close| <= (high-low) * precision) is indecision/near-tie → block BOTH sides
+    // (no trade) and dump a held position. Evaluated live on the forming candle.
+    pub scanner_doji_filter: bool,
+    pub scanner_doji_precision: f64, // doji max body as a fraction of range (indicator default 0.15)
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -239,6 +244,8 @@ impl Config {
             scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", false),
             scanner_fvg_auto_factor: env_f64("SCANNER_FVG_AUTO_FACTOR", 0.7).max(0.0),
             scanner_filter_blanket: env_bool("SCANNER_FILTER_BLANKET", false),
+            scanner_doji_filter: env_bool("SCANNER_DOJI_FILTER", false),
+            scanner_doji_precision: env_f64("SCANNER_DOJI_PRECISION", 0.15).max(0.0001),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
