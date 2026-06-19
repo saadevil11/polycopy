@@ -51,10 +51,10 @@ Two strategies, selected by env:
   price (forming-candle wick) streams from the **Binance kline WebSocket**; the slower
   levels/zones refresh from REST every `SCANNER_LIQ_POLL_SECS`. **FVG hit** = the 5m candle
   opened INSIDE the gap OR opened outside and wicked IN; detected on CLOSED candles only
-  (confirmed 3rd candle; the forming candle is excluded). FVG significance:
-  `SCANNER_FVG_AUTO` on by default → adaptive threshold `SCANNER_FVG_AUTO_FACTOR` × the coin's
-  avg candle range (0.7 ≈ 4-6 gaps/coin; 1.0 = full auto ≈ 1-3; 0 = all); off → fixed
-  `SCANNER_FVG_THRESHOLD_PCT`. Coins with no Binance USDT pair (HYPE) aren't traded while a filter is on.
+  (confirmed 3rd candle; the forming candle is excluded). FVG significance: fixed
+  `SCANNER_FVG_THRESHOLD_PCT` (default 0 = every gap; raise to ignore tiny ones). Optional
+  `SCANNER_FVG_AUTO` (OFF by default) instead scales the threshold to `SCANNER_FVG_AUTO_FACTOR`
+  × the coin's avg candle range. Coins with no Binance USDT pair (HYPE) aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels

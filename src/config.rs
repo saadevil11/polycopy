@@ -231,12 +231,12 @@ impl Config {
             binance_rest_url: env_str("BINANCE_REST_URL", "https://fapi.binance.com"),
             binance_ws_url: env_str("BINANCE_WS_URL", "wss://fstream.binance.com/stream"),
             scanner_fvg_filter: env_bool("SCANNER_FVG_FILTER", true),
+            // Default: FIXED threshold (0 = the indicator's default, every gap counts). Set
+            // a % to ignore tiny gaps, e.g. 0.05. Auto is OFF by default.
             scanner_fvg_threshold_pct: env_f64("SCANNER_FVG_THRESHOLD_PCT", 0.0).max(0.0),
-            // Adaptive threshold (default): ignore gaps smaller than AUTO_FACTOR × the
-            // coin's average candle range — per-coin normalized, unlike a fixed %. 1.0 = a
-            // full avg candle (too few, 1-3/coin); 0.7 = a clean middle (~4-6/coin); 0 = all
-            // gaps (the micro-gap flood). Set SCANNER_FVG_AUTO=false to use the fixed % above.
-            scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", true),
+            // OPTIONAL adaptive mode (off by default): if SCANNER_FVG_AUTO=true, the
+            // threshold becomes AUTO_FACTOR × the coin's avg candle range instead of the % above.
+            scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", false),
             scanner_fvg_auto_factor: env_f64("SCANNER_FVG_AUTO_FACTOR", 0.7).max(0.0),
             scanner_filter_blanket: env_bool("SCANNER_FILTER_BLANKET", false),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
