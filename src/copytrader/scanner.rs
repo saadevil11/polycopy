@@ -698,15 +698,17 @@ impl Scanner {
                 }
                 // signal() returns no blocks when a filter is disabled or has no data.
                 // Blanket mode dumps on ANY hit (either side); directional only on our side.
-                // NOTE: doji is ENTRY-ONLY — it fires on near-ties (~50/50), and dumping a
-                // held near-tie at the floor is -EV and can throw away a winner. So the STOP
-                // uses only liquidity + FVG (directional reversals), never the doji.
                 let blanket = self.cfg.scanner_filter_blanket;
                 let liq = self.liq.signal(&asset);
                 let fvg = self.fvg.signal(&asset);
                 let liq_hit = signal_blocks(&liq, is_up, blanket);
                 let fvg_hit = signal_blocks(&fvg, is_up, blanket);
-                if !liq_hit && !fvg_hit {
+                // Doji stop is ALWAYS directional (ignores blanket): dump only if the doji
+                // leans AGAINST the held side — held Up + bearish doji, or Down + bullish.
+                // A doji leaning our way is left to ride (it may still pay the full 1.0).
+                let dstop = self.doji.stop_signal(&asset);
+                let doji_hit = if is_up { dstop.block_up } else { dstop.block_down };
+                if !liq_hit && !fvg_hit && !doji_hit {
                     continue;
                 }
                 let side = if is_up { "Up" } else { "Down" };
@@ -716,6 +718,9 @@ impl Scanner {
                 }
                 if fvg_hit {
                     w.push(if blanket { "an FVG".into() } else if is_up { "a bearish FVG".into() } else { "a bullish FVG".into() });
+                }
+                if doji_hit {
+                    w.push(if is_up { "a bearish doji".into() } else { "a bullish doji".into() });
                 }
                 let what = format!("held {side} hit {}", w.join(" + "));
                 let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);

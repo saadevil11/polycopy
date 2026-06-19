@@ -3,12 +3,12 @@
 //!
 //! A 5-minute candle is a **doji** when its body is tiny relative to its range:
 //!   `|open - close| <= (high - low) * precision`   (indicator default precision = 0.15).
-//! A doji = indecision / a near-tie close — for a 99c up/down market that means the outcome
-//! is fragile and can flip, so we DON'T enter that market (block **both** Up and Down).
-//! ENTRY-ONLY by design: the doji never dumps a HELD position. A near-tie is ~50/50, so
-//! dumping it at the exit floor would be -EV and can throw away a winner (a bullish doji
-//! that we hold Up on still has ~half its chance to pay the full 1.0). The liquidity/FVG
-//! stops (directional reversals) handle held positions; the doji only gates entry.
+//! A doji = indecision / a near-tie close — for a 99c up/down market the outcome is fragile
+//! and can flip. ENTRY: block **both** Up and Down (don't buy a near-tie at 0.99, whichever
+//! way it leans). STOP (held position): **DIRECTIONAL** — dump only if the doji leans
+//! AGAINST the side we hold (held Up + a **bearish** doji, or held Down + a **bullish**
+//! doji). A doji leaning our way (or neutral) is left to ride — it may still pay the full
+//! 1.0, so we don't throw away a winner (this is the BNB fix).
 //!
 //! The indicator only "fires" at candle CLOSE, but we don't need to wait: the Binance kline
 //! WebSocket streams the FORMING candle's open / high / low / **close (= current price)** on
@@ -84,7 +84,7 @@ impl Doji {
             return;
         }
         info!(
-            "🕯️ doji filter: ON (ENTRY-ONLY, no stop) — skip a 0.99 buy if {}'s current 5m candle is a doji (|open-close| ≤ {:.0}% of range); live via Binance WS",
+            "🕯️ doji filter: ON — skip a 0.99 buy if {}'s 5m candle is a doji (|open-close| ≤ {:.0}% of range); held positions dumped only if the doji leans AGAINST the side (bearish vs Up / bullish vs Down); live via Binance WS",
             self.coins.join("/"),
             self.precision * 100.0
         );
@@ -220,23 +220,51 @@ impl Doji {
         }
     }
 
-    /// Non-directional signal: a doji blocks BOTH sides. `evaluable` is false with no
-    /// Binance pair, no data, or a degenerate (zero-range) candle; a disabled filter is
-    /// trivially evaluable and blocks nothing.
+    /// ENTRY signal: a doji blocks BOTH sides (non-directional — don't buy a near-tie at
+    /// 0.99, whichever way it leans). `evaluable` false with no pair / no data; a disabled
+    /// filter is trivially evaluable and blocks nothing.
     pub fn signal(&self, coin: &str) -> FilterSignal {
         if !self.enabled {
             return FilterSignal { block_up: false, block_down: false, evaluable: true };
         }
-        if binance_symbol(coin).is_none() {
+        match self.eval(coin) {
+            Some((doji, _bull, _bear)) => FilterSignal { block_up: doji, block_down: doji, evaluable: true },
+            None => FilterSignal::default(),
+        }
+    }
+
+    /// DIRECTIONAL STOP signal for HELD positions: dump only if the candle is a doji AND
+    /// leaning AGAINST that side — `block_up` = a BEARISH doji (close<open, Up losing),
+    /// `block_down` = a BULLISH doji (close>open, Down losing). A doji leaning the held
+    /// side's way (or neutral) blocks nothing → hold it (it may still pay 1.0). Always
+    /// directional; the blanket toggle does not apply to it.
+    pub fn stop_signal(&self, coin: &str) -> FilterSignal {
+        if !self.enabled {
             return FilterSignal::default();
+        }
+        match self.eval(coin) {
+            Some((doji, bullish, bearish)) => FilterSignal {
+                block_up: doji && bearish,
+                block_down: doji && bullish,
+                evaluable: true,
+            },
+            None => FilterSignal::default(),
+        }
+    }
+
+    /// (is_doji, bullish, bearish) for the live forming candle, or None if not evaluable
+    /// (no Binance pair / no live data / degenerate zero-range candle).
+    fn eval(&self, coin: &str) -> Option<(bool, bool, bool)> {
+        if binance_symbol(coin).is_none() {
+            return None;
         }
         let map = self.cur.lock().unwrap();
         let c = match map.get(coin) {
             Some(c) if c.high > c.low && c.high > 0.0 => c,
-            _ => return FilterSignal::default(), // no live / degenerate data
+            _ => return None,
         };
         let doji = (c.open - c.close).abs() <= (c.high - c.low) * self.precision;
-        FilterSignal { block_up: doji, block_down: doji, evaluable: true }
+        Some((doji, c.close > c.open, c.close < c.open))
     }
 }
 
@@ -279,5 +307,24 @@ mod tests {
         assert!(!is_doji(100.0, 100.6, 99.9, 100.5, 0.15));
         // degenerate flat candle (range 0) → not evaluable as a doji
         assert!(!is_doji(100.0, 100.0, 100.0, 100.0, 0.15));
+    }
+
+    // Mirrors stop_signal's directional mapping (the counterintuitive part: a BEARISH doji
+    // blocks UP, because close<open means Up is losing).
+    fn stop_blocks(doji: bool, bullish: bool, bearish: bool) -> (bool, bool) {
+        (doji && bearish, doji && bullish) // (block_up, block_down)
+    }
+
+    #[test]
+    fn directional_doji_stop() {
+        // doji + BEARISH (close<open) → dump held Up, not Down
+        assert_eq!(stop_blocks(true, false, true), (true, false));
+        // doji + BULLISH (close>open) → dump held Down, not Up  (the BNB case: held Up holds)
+        assert_eq!(stop_blocks(true, true, false), (false, true));
+        // a doji leaning our way never dumps us: bullish doji + held Up → block_up=false
+        assert_eq!(stop_blocks(true, true, false).0, false);
+        // not a doji → nothing dumps
+        assert_eq!(stop_blocks(false, true, false), (false, false));
+        assert_eq!(stop_blocks(false, false, true), (false, false));
     }
 }
