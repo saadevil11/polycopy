@@ -71,6 +71,12 @@ pub struct Config {
     pub scanner_liq_poll: Duration,     // Binance LEVELS refresh cadence (REST); the live price comes from the WS
     pub binance_rest_url: String,       // swappable if api.binance.com is geo-blocked
     pub binance_ws_url: String,         // Binance combined kline stream (live forming-candle price)
+    // Fair-Value-Gap avoidance filter (LuxAlgo port): skip a 0.99 buy when the coin's
+    // current 5m candle is inside an un-mitigated FVG on Binance 5m/15m. Runs ALONGSIDE
+    // the liquidity filter — a market must be clear on BOTH to be bought.
+    pub scanner_fvg_filter: bool,
+    pub scanner_fvg_threshold_pct: f64, // min gap size as % of price (0 = any gap, the indicator default)
+    pub scanner_fvg_auto: bool,         // auto threshold = mean bar range (overrides the % when true)
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -219,6 +225,13 @@ impl Config {
             scanner_liq_poll: Duration::from_secs(env_u64("SCANNER_LIQ_POLL_SECS", 15).max(2)),
             binance_rest_url: env_str("BINANCE_REST_URL", "https://api.binance.com"),
             binance_ws_url: env_str("BINANCE_WS_URL", "wss://stream.binance.com:9443/stream"),
+            scanner_fvg_filter: env_bool("SCANNER_FVG_FILTER", true),
+            scanner_fvg_threshold_pct: env_f64("SCANNER_FVG_THRESHOLD_PCT", 0.0).max(0.0),
+            // Auto OFF by request — uses the literal % threshold below (0 = the indicator's
+            // default: every gap counts). Now that blocks are DIRECTIONAL (a bull gap only
+            // blocks Down, a bear gap only blocks Up) threshold 0 is workable; raise
+            // SCANNER_FVG_THRESHOLD_PCT (e.g. 0.05) if one side gets over-blocked.
+            scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", false),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),

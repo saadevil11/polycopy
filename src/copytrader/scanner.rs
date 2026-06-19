@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::clob::executor::Executor;
 use crate::clob::signing::{snap_price, SIDE_BUY, SIDE_SELL};
 use crate::config::Config;
+use crate::copytrader::fvg::Fvg;
 use crate::copytrader::liquidity::Liquidity;
 use crate::copytrader::store::{BrownfoxRecord, Store, TradeLog};
 
@@ -49,18 +50,21 @@ pub struct Scanner {
     exec: Arc<Executor>,
     store: Arc<Store>,
     liq: Arc<Liquidity>,
+    fvg: Arc<Fvg>,
     /// token_id -> info for currently-live markets (replaced by the discovery loop).
     markets: Mutex<HashMap<String, MarketInfo>>,
     /// bumped whenever the live token SET changes, so the WS reconnects with it.
     generation: AtomicU64,
-    /// tokens we've already logged a liquidity-skip for (avoids per-update log spam).
+    /// tokens we've already logged a skip for (avoids per-update log spam).
     skip_logged: Mutex<HashSet<String>>,
+    /// latest best ask per watched token — for the periodic order-book heartbeat log.
+    last_ask: Mutex<HashMap<String, f64>>,
     sem: Arc<Semaphore>,
     http: reqwest::Client,
 }
 
 impl Scanner {
-    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>) -> Self {
+    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>, fvg: Arc<Fvg>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent("polybotshadow/0.1")
@@ -72,9 +76,11 @@ impl Scanner {
             exec,
             store,
             liq,
+            fvg,
             markets: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
             skip_logged: Mutex::new(HashSet::new()),
+            last_ask: Mutex::new(HashMap::new()),
             sem: Arc::new(Semaphore::new(permits)),
             http,
         }
@@ -118,7 +124,7 @@ impl Scanner {
                 }
             });
         }
-        // Reconcile loop — fill-check (order data) + stale-cancel.
+        // Reconcile loop — fill-check (order data) + stale-cancel + directional stop.
         {
             let st = st.clone();
             tokio::spawn(async move {
@@ -126,6 +132,17 @@ impl Scanner {
                 loop {
                     t.tick().await;
                     st.reconcile().await;
+                }
+            });
+        }
+        // Heartbeat loop — log the live order books so it's visible what's being watched.
+        {
+            let st = st.clone();
+            tokio::spawn(async move {
+                let mut t = interval(Duration::from_secs(15));
+                loop {
+                    t.tick().await;
+                    st.heartbeat();
                 }
             });
         }
@@ -184,9 +201,17 @@ impl Scanner {
             }
         }
         if next.is_empty() {
-            return; // transient empty fetch — keep the current set
+            warn!(
+                "🔭 99c-scanner: discovery found 0 live 5m markets for assets [{}] windows {:?} — between windows, or Gamma flags not live yet / unreachable",
+                self.assets().join(","),
+                windows
+            );
+            return;
         }
         let new_set: HashSet<String> = next.keys().cloned().collect();
+        let mut coins: Vec<String> = next.values().map(|i| i.asset.to_uppercase()).collect();
+        coins.sort();
+        coins.dedup();
         let old_set: HashSet<String> = {
             let mut guard = self.markets.lock().unwrap();
             let old: HashSet<String> = guard.keys().cloned().collect();
@@ -195,7 +220,15 @@ impl Scanner {
         };
         if new_set != old_set {
             self.generation.fetch_add(1, Ordering::SeqCst);
-            info!("🔭 99c-scanner: watching {} order-book tokens across the live 5m markets", new_set.len());
+            // Drop skip-log + ask-cache entries for tokens we no longer watch.
+            self.skip_logged.lock().unwrap().retain(|t| new_set.contains(t));
+            self.last_ask.lock().unwrap().retain(|t, _| new_set.contains(t));
+            info!(
+                "🔭 99c-scanner: now watching {} tokens across {} coins: {}",
+                new_set.len(),
+                coins.len(),
+                coins.join("/")
+            );
         }
     }
 
@@ -282,6 +315,7 @@ impl Scanner {
                     if let Some(tok) = ev.get("asset_id").and_then(|x| x.as_str()) {
                         let ask = min_price(ev.get("asks"));
                         if ask > 0.0 {
+                            self.record_ask(tok, ask);
                             self.maybe_trigger(tok, ask).await;
                         }
                     }
@@ -293,6 +327,7 @@ impl Scanner {
                             if let Some(tok) = pc.get("asset_id").and_then(|x| x.as_str()) {
                                 let ask = pc.get("best_ask").and_then(num_f64).unwrap_or(0.0);
                                 if ask > 0.0 {
+                                    self.record_ask(tok, ask);
                                     self.maybe_trigger(tok, ask).await;
                                 }
                             }
@@ -302,6 +337,48 @@ impl Scanner {
                 _ => {} // tick_size_change / last_trade_price / etc. — not needed for the trigger
             }
         }
+    }
+
+    /// Cache the latest best ask for a token (drives the heartbeat log).
+    fn record_ask(&self, token: &str, ask: f64) {
+        self.last_ask.lock().unwrap().insert(token.to_string(), ask);
+    }
+
+    /// Periodic order-book heartbeat so it's visible WHAT the scanner sees and how close
+    /// each market is to the 0.99 trigger. Groups the live tokens by coin into Up/Down
+    /// best asks, sorted by the side nearest 1.0 first.
+    fn heartbeat(&self) {
+        // coin -> (up_ask, down_ask)
+        let mut by_coin: HashMap<String, (f64, f64)> = HashMap::new();
+        {
+            let markets = self.markets.lock().unwrap();
+            let asks = self.last_ask.lock().unwrap();
+            for (token, info) in markets.iter() {
+                let ask = asks.get(token).copied().unwrap_or(0.0);
+                let e = by_coin.entry(info.asset.clone()).or_insert((0.0, 0.0));
+                if info.outcome.eq_ignore_ascii_case("up") {
+                    e.0 = ask;
+                } else {
+                    e.1 = ask;
+                }
+            }
+        }
+        if by_coin.is_empty() {
+            info!("🔭 99c-scanner: no live markets right now (waiting for the next 5m window)");
+            return;
+        }
+        let mut rows: Vec<(String, f64, f64)> = by_coin.into_iter().map(|(c, (u, d))| (c, u, d)).collect();
+        // closest-to-trigger coin first
+        rows.sort_by(|a, b| b.1.max(b.2).partial_cmp(&a.1.max(a.2)).unwrap_or(std::cmp::Ordering::Equal));
+        let trig = self.cfg.scanner_trigger_ask;
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|(c, u, d)| {
+                let hot = if *u >= trig || *d >= trig { "🔥" } else { "" };
+                format!("{}{} U{:.3} D{:.3}", hot, c.to_uppercase(), u, d)
+            })
+            .collect();
+        info!("🔭 99c-scanner books (ask; trigger {:.2}): {}", trig, parts.join("  |  "));
     }
 
     /// If `best_ask` is in [trigger, 1.0) and we haven't claimed this token yet,
@@ -317,12 +394,39 @@ impl Scanner {
             Some(i) => i,
             None => return, // not a token we're tracking
         };
-        // Liquidity-level avoidance: skip the 0.99 if the coin's current 5m candle has
-        // touched any swing level (pooled from 5m/15m/30m) during this window (reversal
-        // risk), or if we have no candle data to evaluate it.
-        if !self.liq.clear_to_trade(&info.asset) {
+        // DIRECTIONAL avoidance: the side we'd buy (Up or Down) must be clear on BOTH the
+        // liquidity and FVG filters. Resistance above (high level / bearish FVG) blocks
+        // Up; support below (low level / bullish FVG) blocks Down. Missing candle data =>
+        // not evaluable => skip (we don't trade what we can't judge).
+        let is_up = info.outcome.eq_ignore_ascii_case("up");
+        let liq = self.liq.signal(&info.asset);
+        let fvg = self.fvg.signal(&info.asset);
+        let evaluable = liq.evaluable && fvg.evaluable;
+        let (liq_block, fvg_block) = if is_up {
+            (liq.block_up, fvg.block_up)
+        } else {
+            (liq.block_down, fvg.block_down)
+        };
+        if !evaluable || liq_block || fvg_block {
             if self.skip_logged.lock().unwrap().insert(token.to_string()) {
-                info!("🔭 99c-scanner: SKIP {} — {} 5m candle touched a liquidity level (5m/15m/30m) this window, or no candle data", label(&info.title, &info.outcome, token), info.asset.to_uppercase());
+                let reason = if !evaluable {
+                    "no Binance candle data yet (or no pair)".to_string()
+                } else {
+                    let side = if is_up { "Up" } else { "Down" };
+                    let mut why: Vec<&str> = Vec::new();
+                    match (is_up, liq_block) {
+                        (true, true) => why.push("at a high level"),
+                        (false, true) => why.push("at a low level"),
+                        _ => {}
+                    }
+                    match (is_up, fvg_block) {
+                        (true, true) => why.push("in a bearish FVG"),
+                        (false, true) => why.push("in a bullish FVG"),
+                        _ => {}
+                    }
+                    format!("buying {side} blocked — {}", why.join(" + "))
+                };
+                info!("🔭 99c-scanner: SKIP {} — {}", label(&info.title, &info.outcome, token), reason);
             }
             return;
         }
@@ -440,21 +544,44 @@ impl Scanner {
             }
         }
 
-        // LIQUIDITY STOP: for positions we HOLD whose market is still live, if the coin
-        // now touches a level (reversal risk), dump the shares with a GTC sell at the
-        // exit price (sweeps the bids down to the floor). Entry already avoided touched
-        // markets; this catches a touch that happens AFTER we bought, mid-window.
-        if self.cfg.scanner_liquidity_filter {
+        // STOP: for positions we HOLD whose market is still live, if the coin moves AGAINST
+        // the side we hold — held Up + (high level / bearish FVG), or held Down + (low
+        // level / bullish FVG) — dump with a GTC sell at the exit price (sweeps the bids
+        // to the floor). Entry already avoided blocked sides; this catches a hit that
+        // happens AFTER we bought, mid-window. Either filter firing for our side is enough.
+        if self.cfg.scanner_liquidity_filter || self.cfg.scanner_fvg_filter {
             for (token, rec) in self.store.scan_filled() {
-                // asset is only known while the market is live (in the discovery map);
-                // once it resolves the token drops out and the position just settles.
-                let asset = match self.markets.lock().unwrap().get(&token).map(|i| i.asset.clone()) {
-                    Some(a) => a,
+                // asset+side are only known while the market is live (in the discovery
+                // map); once it resolves the token drops out and the position settles.
+                let (asset, is_up) = match self
+                    .markets
+                    .lock()
+                    .unwrap()
+                    .get(&token)
+                    .map(|i| (i.asset.clone(), i.outcome.eq_ignore_ascii_case("up")))
+                {
+                    Some(x) => x,
                     None => continue,
                 };
-                if !self.liq.at_level(&asset) {
+                // signal() returns no blocks when a filter is disabled or has no data.
+                let liq = self.liq.signal(&asset);
+                let fvg = self.fvg.signal(&asset);
+                let (liq_hit, fvg_hit) = if is_up {
+                    (liq.block_up, fvg.block_up)
+                } else {
+                    (liq.block_down, fvg.block_down)
+                };
+                if !liq_hit && !fvg_hit {
                     continue;
                 }
+                let side = if is_up { "Up" } else { "Down" };
+                let level_word = if is_up { "a high level" } else { "a low level" };
+                let fvg_word = if is_up { "a bearish FVG" } else { "a bullish FVG" };
+                let what = match (liq_hit, fvg_hit) {
+                    (true, true) => format!("held {side} hit {level_word} + {fvg_word}"),
+                    (true, false) => format!("held {side} hit {level_word}"),
+                    _ => format!("held {side} hit {fvg_word}"),
+                };
                 let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);
                 if held < MIN_SHARES {
                     held = size; // fallback to the configured size; exchange caps at balance
@@ -474,9 +601,9 @@ impl Scanner {
                             price,
                             status: "FILLED".into(),
                         });
-                        info!("🔭 99c-scanner: LIQUIDITY STOP — {} touched a level, sold {:.0} sh GTC @ {:.2}", label(&rec.title, asset.to_uppercase().as_str(), &token), held, price);
+                        info!("🔭 99c-scanner: STOP — {} {}, sold {:.0} sh GTC @ {:.2}", label(&rec.title, asset.to_uppercase().as_str(), &token), what, held, price);
                     }
-                    Err(e) => warn!("🔭 99c-scanner: liquidity-stop sell failed for {} ({e}) — will retry", label(&rec.title, "", &token)),
+                    Err(e) => warn!("🔭 99c-scanner: stop sell failed for {} ({e}) — will retry", label(&rec.title, "", &token)),
                 }
             }
         }

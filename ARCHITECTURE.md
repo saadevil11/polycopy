@@ -36,18 +36,22 @@ Two strategies, selected by env:
   semaphore-bounded placement; fills via `order_matched` (never `/positions`); stale-
   cancel via `NINETYNINE_BUY_MAX_AGE_SECS`; restart-safe; terminal records pruned. Buys
   the same markets as 99c but order-book-driven so it doesn't miss the trader's entries.
-  Optional **liquidity-level avoidance filter** (`SCANNER_LIQUIDITY_FILTER`, `liquidity.rs`,
-  a Rust port of the "Liquidity Levels - Sonarlab" indicator): before a 0.99 buy it checks
-  the coin's **current 5-minute candle** (the market's window) against every swing-high/low
-  level **pooled from the 5m + 15m + 30m timeframes** (pivots 15L/5R, wick mitigation), and
-  **skips** the market if that 5m candle has touched any level since the window opened
-  (price at liquidity = reversal risk; one touch disqualifies the market for its whole life).
-  Also a **liquidity STOP**: if a market we already bought touches a level while still live,
-  we dump the shares with a GTC sell at `SCANNER_EXIT_PRICE` (0.10). The live price (forming-
-  candle wick) streams from the **Binance kline WebSocket** in real time so a touch registers
-  instantly (the 0.99 check is a cached in-memory read — no fetch at decision time); the
-  slower **levels** refresh from REST every `SCANNER_LIQ_POLL_SECS`. Coins with no Binance
-  USDT pair (HYPE) aren't traded while it's on.
+  Two optional **DIRECTIONAL avoidance filters** gate each 0.99 buy by the side it would
+  buy (Up vs Down), keyed off the coin's **current 5-minute candle** (the market window).
+  (1) **liquidity levels** (`SCANNER_LIQUIDITY_FILTER`, `liquidity.rs`, "Liquidity Levels -
+  Sonarlab" port): swing pivots (15L/5R, wick) pooled from **5m+15m+30m** — touching a
+  **high** level (resistance) blocks **Up**, a **low** level (support) blocks **Down**.
+  (2) **Fair Value Gaps** (`SCANNER_FVG_FILTER`, `fvg.rs`, "Fair Value Gap [LuxAlgo]" port):
+  un-mitigated 3-candle gaps on **5m+15m** — inside a **bearish** FVG blocks **Up**, a
+  **bullish** FVG blocks **Down**. Each filter returns a `FilterSignal{block_up, block_down,
+  evaluable}`. **Entry:** the side being bought must be unblocked on **both** filters (and
+  both must be evaluable — no Binance pair / no data ⇒ skip). **STOP:** a held position is
+  dumped with a GTC sell at `SCANNER_EXIT_PRICE` (0.10) if **either** filter blocks the side
+  we hold (held Up + high level/bearish FVG, or held Down + low level/bullish FVG). The live
+  price (forming-candle wick) streams from the **Binance kline WebSocket**; the slower
+  levels/zones refresh from REST every `SCANNER_LIQ_POLL_SECS`. FVG threshold: `SCANNER_FVG_AUTO`
+  off by default → fixed `SCANNER_FVG_THRESHOLD_PCT` (0 = all gaps; OK now that blocks are
+  directional). Coins with no Binance USDT pair (HYPE) aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
   (one fixed-SHARE fill-and-kill buy per market — `orderType:"FAK"`, a limit
   `SELL_WITH_TARGET_BUY_AHEAD` above the best ask so it crosses + fills now and cancels
@@ -172,6 +176,7 @@ src/
     sellwithtarget.rs     brownfox entry; on target's sell, market-sell all (non-blocking worker)
     scanner.rs            99c order-book scanner: no target; CLOB market WS, buy 0.99 when ask hits it
     liquidity.rs          Binance 5m/15m/30m swing-level filter (Sonarlab port); skip 0.99 if price at a level
+    fvg.rs                Binance 5m/15m fair-value-gap filter (LuxAlgo port); skip 0.99 if price in an FVG
     replicator.rs         proportional buy/sell copy
     weather.rs            price-chase buy (1c ahead) / sell (1 tick down)
     autosell.rs           resting standard-price sell maintainer
@@ -196,8 +201,9 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
 (0.99), `SCANNER_EXIT_PRICE` (0.10, liquidity-stop floor), `SCANNER_DISCOVERY_SECS`
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
-liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels cadence),
-`BINANCE_REST_URL`, `BINANCE_WS_URL` (live price). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels/FVG cadence),
+`BINANCE_REST_URL`, `BINANCE_WS_URL` (live price); FVG filter `SCANNER_FVG_FILTER`,
+`SCANNER_FVG_AUTO` (default true), `SCANNER_FVG_THRESHOLD_PCT`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

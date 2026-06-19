@@ -5,18 +5,18 @@
 //! no resampling), finds swing-high / swing-low **pivots** (15 left / 5 right bars =
 //! the indicator's defaults) as liquidity levels, drops a level once price **wicks**
 //! through it (mitigation by high/low, not close — so we react the moment price
-//! touches it), and answers one question: **has the coin's current 5-minute candle
-//! (the market's window) touched any active level pooled from all three timeframes
-//! since the window opened?** If so, the scanner SKIPS that 5m market's 0.99 buy
-//! (price at a liquidity level = reversal risk). The 5m candle's range covers the
-//! whole window, so one touch disqualifies the market for its entire life.
+//! touches it), and emits a **directional** signal for the coin's current 5-minute
+//! candle (the market's window) vs every level pooled from all three timeframes:
+//! touching a **high** level (resistance) blocks buying **Up**; touching a **low**
+//! level (support) blocks buying **Down**. The 5m candle's range covers the whole
+//! window, so a touch anywhere in it keeps that side blocked until the window closes.
 //!
 //! Data: the live price (forming-candle high/low) streams from the **Binance combined
 //! kline WebSocket** (`BINANCE_WS_URL`, sub-second) so a touch is caught in real time;
 //! the slower-moving **levels** are recomputed from the klines **REST** every
 //! `SCANNER_LIQ_POLL_SECS` (which also self-heals any WS gap). Coins with no Binance
-//! USDT pair (e.g. HYPE) have no data → `clear_to_trade` is false (we don't trade what
-//! we can't filter).
+//! USDT pair (e.g. HYPE) have no data → the signal is not evaluable (the scanner skips,
+//! since we don't trade what we can't filter).
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,6 +28,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
+use crate::copytrader::FilterSignal;
 
 const TFS: [&str; 3] = ["5m", "15m", "30m"];
 const LEFT: usize = 15;
@@ -247,28 +248,25 @@ impl Liquidity {
         s.cur_lo = cur_lo;
     }
 
-    /// True if it's safe to trade this coin's 0.99. The check: the CURRENT 5-minute
-    /// candle (= the market's window; its running high/low is the price range from the
-    /// window's open until now) must NOT have touched ANY active level pooled from the
-    /// 5m + 15m + 30m timeframes. Touch = the 5m candle's high reached up to a high
-    /// level, or its low reached down to a low level (wick). False if it touched OR data
-    /// is missing (we never trade a coin we can't evaluate — HYPE, or Binance down).
-    /// Because the 5m candle's range grows over the whole window, a touch anywhere in
-    /// the window keeps the market disqualified until that window closes.
-    pub fn clear_to_trade(&self, coin: &str) -> bool {
+    /// Directional avoidance signal for this coin's current 5m window. The CURRENT 5m
+    /// candle (its running high/low = the price range since the window opened) is tested
+    /// against every active level pooled from 5m + 15m + 30m:
+    ///   * touched a HIGH level (resistance) → `block_up` (don't buy the Up outcome),
+    ///   * touched a LOW level (support)     → `block_down` (don't buy Down).
+    /// `evaluable` is false when we can't judge (no Binance pair, or a timeframe not yet
+    /// seeded); a disabled filter is trivially evaluable and blocks nothing.
+    pub fn signal(&self, coin: &str) -> FilterSignal {
         if !self.enabled {
-            return true;
+            return FilterSignal { block_up: false, block_down: false, evaluable: true };
         }
         if binance_symbol(coin).is_none() {
-            return false; // no candle source (e.g. HYPE) → don't trade
+            return FilterSignal::default(); // no candle source (e.g. HYPE) → can't evaluate
         }
         let map = self.series.lock().unwrap();
-        // The 5m candle is the market's window — test ITS range against all levels.
         let (cur_hi, cur_lo) = match map.get(&format!("{coin}:5m")) {
             Some(s) if s.cur_hi > 0.0 => (s.cur_hi, s.cur_lo),
-            _ => return false, // 5m not live yet → conservative skip
+            _ => return FilterSignal::default(), // 5m not live yet → not evaluable
         };
-        // Pool every active level across all timeframes (5m/15m/30m).
         let (mut highs, mut lows): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
         for tf in TFS {
             match map.get(&format!("{coin}:{tf}")) {
@@ -276,43 +274,26 @@ impl Liquidity {
                     highs.extend(s.highs.iter().copied());
                     lows.extend(s.lows.iter().copied());
                 }
-                None => return false, // a timeframe's levels not seeded → conservative skip
+                None => return FilterSignal::default(), // a timeframe not seeded → not evaluable
             }
         }
-        !level_touched(cur_hi, cur_lo, &highs, &lows)
-    }
-
-    /// For the post-entry LIQUIDITY STOP: true iff there IS live data and the coin's
-    /// current 5m candle has touched a pooled level. Unlike `clear_to_trade`, missing
-    /// data returns false (we never DUMP a held position just because data is absent).
-    pub fn at_level(&self, coin: &str) -> bool {
-        if !self.enabled || binance_symbol(coin).is_none() {
-            return false;
+        FilterSignal {
+            block_up: touched_high(cur_hi, &highs),
+            block_down: touched_low(cur_lo, &lows),
+            evaluable: true,
         }
-        let map = self.series.lock().unwrap();
-        let (cur_hi, cur_lo) = match map.get(&format!("{coin}:5m")) {
-            Some(s) if s.cur_hi > 0.0 => (s.cur_hi, s.cur_lo),
-            _ => return false,
-        };
-        let (mut highs, mut lows): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
-        for tf in TFS {
-            if let Some(s) = map.get(&format!("{coin}:{tf}")) {
-                highs.extend(s.highs.iter().copied());
-                lows.extend(s.lows.iter().copied());
-            }
-        }
-        level_touched(cur_hi, cur_lo, &highs, &lows)
     }
 }
 
-/// True if the 5m window candle (`cur_hi`/`cur_lo`) reached any pooled level: its high
-/// touched up to a high level, or its low touched down to a low level (wick). cur_hi==0
-/// means no live data → not touched (the caller treats missing data as skip separately).
-fn level_touched(cur_hi: f64, cur_lo: f64, highs: &[f64], lows: &[f64]) -> bool {
-    if cur_hi <= 0.0 {
-        return false;
-    }
-    highs.iter().any(|&h| cur_hi >= h) || lows.iter().any(|&l| cur_lo <= l)
+/// The 5m window candle's high reached up to a high level (resistance touch). cur_hi==0
+/// means no live data → not touched.
+fn touched_high(cur_hi: f64, highs: &[f64]) -> bool {
+    cur_hi > 0.0 && highs.iter().any(|&h| cur_hi >= h)
+}
+
+/// The 5m window candle's low reached down to a low level (support touch).
+fn touched_low(cur_lo: f64, lows: &[f64]) -> bool {
+    cur_lo > 0.0 && lows.iter().any(|&l| cur_lo <= l)
 }
 
 /// Swing-high / swing-low pivots over closed `bars` (each `(high, low)`), 15 left + 5
@@ -381,14 +362,19 @@ mod tests {
     }
 
     #[test]
-    fn level_touch_uses_forming_wick() {
-        let highs = [110.0];
+    fn directional_touch_uses_forming_wick() {
+        let highs = [110.0, 109.2];
         let lows = [5.0];
-        assert!(!level_touched(109.0, 100.0, &highs, &lows)); // 109<110, 100>5 -> clear
-        assert!(level_touched(110.0, 100.0, &highs, &lows)); // 5m high reached the 110 level
-        assert!(level_touched(109.0, 5.0, &highs, &lows)); // 5m low reached the 5 level
-        assert!(!level_touched(0.0, 0.0, &highs, &lows)); // no live data
-        // pooled-across-TFs: a 30m level the 5m candle reaches still counts
-        assert!(level_touched(109.5, 100.0, &[110.0, 109.2], &[5.0])); // touches the 109.2 level
+        // clear of both
+        assert!(!touched_high(109.0, &highs));
+        assert!(!touched_low(100.0, &lows));
+        // high reached → blocks UP only
+        assert!(touched_high(110.0, &highs));
+        assert!(touched_high(109.5, &highs)); // reaches the pooled 109.2 level
+        // low reached → blocks DOWN only
+        assert!(touched_low(5.0, &lows));
+        // no live data
+        assert!(!touched_high(0.0, &highs));
+        assert!(!touched_low(0.0, &lows));
     }
 }

@@ -11,6 +11,7 @@
 pub mod autosell;
 pub mod brownfox;
 pub mod dashboard;
+pub mod fvg;
 pub mod liquidity;
 pub mod monitor;
 pub mod ninetynine;
@@ -26,6 +27,20 @@ pub mod weather;
 pub enum Side {
     Buy,
     Sell,
+}
+
+/// A directional avoidance signal from an indicator filter for one coin's current 5m
+/// window. The block is DIRECTIONAL: resistance above (a high swing level / a bearish
+/// FVG) blocks buying the **Up** outcome; support below (a low level / a bullish FVG)
+/// blocks buying **Down**. `evaluable` is false when the filter is on but has no data
+/// to judge (no Binance pair, or candles not seeded) — the caller treats that as "skip
+/// the buy" but never as a reason to dump a held position. A disabled filter returns
+/// `{false, false, evaluable: true}` so it never gates.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FilterSignal {
+    pub block_up: bool,
+    pub block_down: bool,
+    pub evaluable: bool,
 }
 
 /// One observed fill from the target trader.
