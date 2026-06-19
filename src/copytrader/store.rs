@@ -298,6 +298,15 @@ impl Store {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
+    /// All scanner records: token -> (status, buy_price). For the dashboard order overlay.
+    pub fn scan_all(&self) -> std::collections::HashMap<String, (String, f64)> {
+        self.scanner
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), (v.status.clone(), v.buy_price)))
+            .collect()
+    }
     /// Drop terminal scanner records (FILLED/CANCELLED/EXITED) whose buy was placed
     /// before `cutoff_ms`, so scanner.json stays bounded (the scanner touches thousands
     /// of 5m markets/day). A resolved market's token never recurs, so this can't cause a

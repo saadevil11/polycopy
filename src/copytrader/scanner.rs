@@ -41,14 +41,28 @@ const DEFAULT_ASSETS: [&str; 7] = ["btc", "eth", "sol", "xrp", "bnb", "doge", "h
 const SANE_ASK_SUM_MAX: f64 = 1.10;
 
 #[derive(Clone)]
-struct MarketInfo {
-    asset: String, // btc / eth / … (from the slug) — keys the liquidity filter
-    title: String,
-    outcome: String, // Up / Down
-    tick: f64,
-    market: String, // the slug — groups the Up/Down pair (one 5m market)
-    end_ts: u64,     // window end unix ts (slug ts + 300) — for display
-    sister: String,  // the OTHER outcome's token id — for book-sanity (Up_ask+Down_ask)
+pub struct MarketInfo {
+    pub asset: String, // btc / eth / … (from the slug) — keys the liquidity filter
+    pub title: String,
+    pub outcome: String, // Up / Down
+    pub tick: f64,
+    pub market: String, // the slug — groups the Up/Down pair (one 5m market)
+    pub end_ts: u64,     // window end unix ts (slug ts + 300) — for display
+    pub sister: String,  // the OTHER outcome's token id — for book-sanity (Up_ask+Down_ask)
+}
+
+/// Live scanner state shared with the dashboard: the currently-watched markets (by token)
+/// and the latest best ask per token, both pushed straight off the order-book WebSocket.
+#[derive(Default)]
+pub struct ScannerView {
+    pub markets: Mutex<HashMap<String, MarketInfo>>,
+    pub asks: Mutex<HashMap<String, f64>>,
+}
+
+impl ScannerView {
+    pub fn new() -> Arc<Self> {
+        Arc::new(ScannerView::default())
+    }
 }
 
 pub struct Scanner {
@@ -57,20 +71,18 @@ pub struct Scanner {
     store: Arc<Store>,
     liq: Arc<Liquidity>,
     fvg: Arc<Fvg>,
-    /// token_id -> info for currently-live markets (replaced by the discovery loop).
-    markets: Mutex<HashMap<String, MarketInfo>>,
+    /// live markets (token -> info) + latest best ask per token — shared with the dashboard.
+    view: Arc<ScannerView>,
     /// bumped whenever the live token SET changes, so the WS reconnects with it.
     generation: AtomicU64,
     /// tokens we've already logged a skip for (avoids per-update log spam).
     skip_logged: Mutex<HashSet<String>>,
-    /// latest best ask per watched token — for the periodic order-book heartbeat log.
-    last_ask: Mutex<HashMap<String, f64>>,
     sem: Arc<Semaphore>,
     http: reqwest::Client,
 }
 
 impl Scanner {
-    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>, fvg: Arc<Fvg>) -> Self {
+    pub fn new(cfg: Config, exec: Arc<Executor>, store: Arc<Store>, liq: Arc<Liquidity>, fvg: Arc<Fvg>, view: Arc<ScannerView>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent("polybotshadow/0.1")
@@ -83,10 +95,9 @@ impl Scanner {
             store,
             liq,
             fvg,
-            markets: Mutex::new(HashMap::new()),
+            view,
             generation: AtomicU64::new(0),
             skip_logged: Mutex::new(HashSet::new()),
-            last_ask: Mutex::new(HashMap::new()),
             sem: Arc::new(Semaphore::new(permits)),
             http,
         }
@@ -231,7 +242,7 @@ impl Scanner {
         coins.sort();
         coins.dedup();
         let old_set: HashSet<String> = {
-            let mut guard = self.markets.lock().unwrap();
+            let mut guard = self.view.markets.lock().unwrap();
             let old: HashSet<String> = guard.keys().cloned().collect();
             *guard = next;
             old
@@ -240,7 +251,7 @@ impl Scanner {
             self.generation.fetch_add(1, Ordering::SeqCst);
             // Drop skip-log + ask-cache entries for tokens we no longer watch.
             self.skip_logged.lock().unwrap().retain(|t| new_set.contains(t));
-            self.last_ask.lock().unwrap().retain(|t, _| new_set.contains(t));
+            self.view.asks.lock().unwrap().retain(|t, _| new_set.contains(t));
             info!(
                 "🔭 99c-scanner: now watching {} tokens across {} coins: {}",
                 new_set.len(),
@@ -253,7 +264,7 @@ impl Scanner {
     async fn ws_loop(&self) {
         let mut backoff = 2u64;
         loop {
-            let tokens: Vec<String> = self.markets.lock().unwrap().keys().cloned().collect();
+            let tokens: Vec<String> = self.view.markets.lock().unwrap().keys().cloned().collect();
             if tokens.is_empty() {
                 sleep(Duration::from_secs(2)).await;
                 continue;
@@ -359,7 +370,7 @@ impl Scanner {
 
     /// Cache the latest best ask for a token (drives the heartbeat log).
     fn record_ask(&self, token: &str, ask: f64) {
-        self.last_ask.lock().unwrap().insert(token.to_string(), ask);
+        self.view.asks.lock().unwrap().insert(token.to_string(), ask);
     }
 
     /// Periodic order-book heartbeat so it's visible WHAT the scanner sees and how close
@@ -370,8 +381,8 @@ impl Scanner {
         // market -> (coin, end_ts, up_ask, down_ask)
         let mut by_market: HashMap<String, (String, u64, f64, f64)> = HashMap::new();
         {
-            let markets = self.markets.lock().unwrap();
-            let asks = self.last_ask.lock().unwrap();
+            let markets = self.view.markets.lock().unwrap();
+            let asks = self.view.asks.lock().unwrap();
             for (token, info) in markets.iter() {
                 let ask = asks.get(token).copied().unwrap_or(0.0);
                 let e = by_market.entry(info.market.clone()).or_insert((info.asset.clone(), info.end_ts, 0.0, 0.0));
@@ -415,7 +426,7 @@ impl Scanner {
         if self.store.scan_claimed(token) {
             return; // already handled (fast path; claim_scan is the real guard)
         }
-        let info = match self.markets.lock().unwrap().get(token).cloned() {
+        let info = match self.view.markets.lock().unwrap().get(token).cloned() {
             Some(i) => i,
             None => return, // not a token we're tracking
         };
@@ -423,7 +434,7 @@ impl Scanner {
         // book. The two outcomes' best asks must both be real (0<ask<1) and sum to ≈1
         // (≤ SANE_ASK_SUM_MAX). A side showing 1.000 (no real offer) or a sum far over 1
         // means a stale/one-sided book — skip until it's correct.
-        let sister_ask = self.last_ask.lock().unwrap().get(&info.sister).copied().unwrap_or(0.0);
+        let sister_ask = self.view.asks.lock().unwrap().get(&info.sister).copied().unwrap_or(0.0);
         if !book_sane(best_ask, sister_ask) {
             if self.skip_logged.lock().unwrap().insert(token.to_string()) {
                 info!(
@@ -600,6 +611,7 @@ impl Scanner {
                 // asset+side are only known while the market is live (in the discovery
                 // map); once it resolves the token drops out and the position settles.
                 let (asset, is_up) = match self
+                    .view
                     .markets
                     .lock()
                     .unwrap()

@@ -52,6 +52,8 @@ async fn main() -> Result<()> {
     let data_dir = std::env::var("COPY_DATA_DIR").unwrap_or_else(|_| "./data".into());
     let store = Arc::new(copytrader::store::Store::open(&data_dir));
 
+    // Shared live scanner state (watched markets + book asks) for the dashboard cards.
+    let mut scanner_view: Option<Arc<copytrader::scanner::ScannerView>> = None;
     if cfg.scanner_enabled {
         // ── 99c order-book SCANNER: self-driven, NO target trader / monitor. It
         // watches the 5m order books directly and buys at 0.99 when the ask hits it.
@@ -64,7 +66,9 @@ async fn main() -> Result<()> {
                 tokio::spawn(liq.clone().run());
                 let fvg = Arc::new(copytrader::fvg::Fvg::new(&cfg));
                 tokio::spawn(fvg.clone().run());
-                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone(), liq, fvg);
+                let view = copytrader::scanner::ScannerView::new();
+                scanner_view = Some(view.clone());
+                let sc = copytrader::scanner::Scanner::new(cfg.clone(), exec, store.clone(), liq, fvg, view);
                 tokio::spawn(sc.run());
             }
             None => tracing::warn!("99c-scanner needs PRIVATE_KEY/auth — nothing to do"),
@@ -121,7 +125,7 @@ async fn main() -> Result<()> {
     let started = Utc::now();
     match executor {
         Some(exec) => {
-            let h_dash = tokio::spawn(copytrader::dashboard::serve(cfg.clone(), exec, store.clone(), started));
+            let h_dash = tokio::spawn(copytrader::dashboard::serve(cfg.clone(), exec, store.clone(), started, scanner_view));
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => tracing::info!("shutdown requested"),
                 r = h_dash => match r {
