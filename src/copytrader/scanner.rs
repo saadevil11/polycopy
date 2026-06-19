@@ -262,7 +262,11 @@ impl Scanner {
     }
 
     async fn ws_loop(&self) {
-        let mut backoff = 2u64;
+        // The 0.99 trigger is time-critical (the favorite is at 0.99 only in the final
+        // seconds of a window), so reconnect FAST: 1s, capped at 5s — never leave the book
+        // unwatched for long. The CLOB market WS is a firehose and resets occasionally,
+        // especially at window close; a slow backoff there could miss the entry.
+        let mut backoff = 1u64;
         loop {
             let tokens: Vec<String> = self.view.markets.lock().unwrap().keys().cloned().collect();
             if tokens.is_empty() {
@@ -270,11 +274,11 @@ impl Scanner {
                 continue;
             }
             match self.ws_session(&tokens).await {
-                Ok(_) => backoff = 2,
+                Ok(_) => backoff = 1,
                 Err(e) => {
                     warn!("🔭 99c-scanner: market WS ended ({e}); reconnecting in {backoff}s");
                     sleep(Duration::from_secs(backoff)).await;
-                    backoff = (backoff * 2).min(30);
+                    backoff = (backoff * 2).min(5);
                 }
             }
         }
