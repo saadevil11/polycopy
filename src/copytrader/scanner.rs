@@ -154,8 +154,13 @@ impl Scanner {
     /// by slug: the current + next 300s windows for each asset, one batched request).
     async fn discover(&self) {
         let now = chrono::Utc::now().timestamp().max(0) as u64;
-        let cur = ((now / 300) + 1) * 300; // window the accepting market ends at
-        let windows = [cur, cur + 300];
+        // The `<asset>-updown-5m-<ts>` slug ts is the window's START (it ends at ts+300).
+        // The market converging toward 0.99 is the IN-PROGRESS window (start = now floored
+        // to 300), and the just-resolved one can still be settling at ~0.99 while it accepts
+        // orders. Watch resolving + in-progress + next (pre-subscribe); Gamma's live flags
+        // drop any that aren't actually tradable.
+        let base = (now / 300) * 300;
+        let windows = [base.saturating_sub(300), base, base + 300];
         let mut query: Vec<(&str, String)> = Vec::new();
         for a in self.assets() {
             for w in windows {
@@ -509,13 +514,16 @@ impl Scanner {
         for (token, rec) in self.store.active_scan() {
             if rec.order_id.is_empty() {
                 // Claimed but the placement worker hasn't recorded an order id yet (in
-                // flight) — or it failed and released. Clean up a stuck claim if old.
-                let age_stale = self
+                // flight) — or it was dropped/crashed before placing. An empty order_id can
+                // never become a position, so reclaim it after a hard ceiling EVEN when
+                // stale-cancel is off (NINETYNINE_BUY_MAX_AGE_SECS=0) so claims can't leak.
+                let ceiling_ms = self
                     .cfg
                     .ninetynine_buy_max_age
-                    .map(|m| now_ms().saturating_sub(rec.placed_at_ms) as u128 > m.as_millis())
-                    .unwrap_or(false);
-                if age_stale {
+                    .map(|m| m.as_millis())
+                    .unwrap_or(0)
+                    .max(10 * 60 * 1000);
+                if (now_ms().saturating_sub(rec.placed_at_ms) as u128) > ceiling_ms {
                     self.store.delete_scan(&token);
                 }
                 continue;
