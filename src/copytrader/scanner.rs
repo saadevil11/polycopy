@@ -132,6 +132,11 @@ impl Scanner {
         if st.cfg.scanner_filter_blanket {
             info!("🔭 99c-scanner: filter mode = BLANKET — any liquidity level / FVG hit blocks BOTH sides (no up, no down)");
         }
+        if st.cfg.scanner_stop_enabled {
+            info!("🔭 99c-scanner: held-position STOP = ON (SCANNER_STOP_ENABLED=true) — filters can dump a held position. NOTE: a 66/66 audit found every stop was a winner-dump.");
+        } else {
+            info!("🔭 99c-scanner: held-position STOP = OFF — filters are ENTRY-ONLY (never dump a held position); positions are held to resolution");
+        }
 
         // Initial discovery so the first WS connect has tokens; resume persisted state.
         st.discover().await;
@@ -148,7 +153,8 @@ impl Scanner {
                 }
             });
         }
-        // Reconcile loop — fill-check (order data) + stale-cancel + directional stop.
+        // Reconcile loop — fill-check (order data) + stale-cancel + directional buy-cancel
+        // (+ held-position stop only if SCANNER_STOP_ENABLED; off by default).
         {
             let st = st.clone();
             tokio::spawn(async move {
@@ -670,12 +676,16 @@ impl Scanner {
             }
         }
 
-        // STOP: for positions we HOLD whose market is still live, if the coin moves AGAINST
-        // the side we hold — held Up + (high level / bearish FVG), or held Down + (low
-        // level / bullish FVG) — dump with a GTC sell at the exit price (sweeps the bids
-        // to the floor). Entry already avoided blocked sides; this catches a hit that
-        // happens AFTER we bought, mid-window. Either filter firing for our side is enough.
-        if self.cfg.scanner_liquidity_filter || self.cfg.scanner_fvg_filter {
+        // STOP (DISABLED BY DEFAULT — `SCANNER_STOP_ENABLED`): for positions we HOLD whose
+        // market is still live, if the coin moves AGAINST the side we hold — held Up + (high
+        // level / bearish FVG / bearish doji), or held Down + (low level / bullish FVG /
+        // bullish doji) — dump with a GTC sell at the exit price (sweeps the bids to the
+        // floor). A 66/66 audit (2026-06-20) found EVERY such stop was a winner-dump: we buy
+        // the 0.99 favorite (which ~always wins) and the filters fire on its OWN move toward
+        // winning, so the stop only ever sold winners. It is therefore OFF by default and the
+        // filters are ENTRY-ONLY (they still gate buys + cancel an unfilled resting buy above,
+        // but never dump a held position). Flip the env to true only if re-validated.
+        if self.cfg.scanner_stop_enabled {
             for (token, rec) in self.store.scan_filled() {
                 // asset+side are only known while the market is live (in the discovery
                 // map); once it resolves the token drops out and the position settles.

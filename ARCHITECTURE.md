@@ -45,9 +45,15 @@ Two strategies, selected by env:
   un-mitigated 3-candle gaps on **5m+15m** — inside a **bearish** FVG blocks **Up**, a
   **bullish** FVG blocks **Down**. Each filter returns a `FilterSignal{block_up, block_down,
   evaluable}`. **Entry:** the side being bought must be unblocked on **both** filters (and
-  both must be evaluable — no Binance pair / no data ⇒ skip). **STOP:** a held position is
-  dumped with a GTC sell at `SCANNER_EXIT_PRICE` (0.10) if **either** filter blocks the side
-  we hold (held Up + high level/bearish FVG, or held Down + low level/bullish FVG). The live
+  both must be evaluable — no Binance pair / no data ⇒ skip). **STOP — DISABLED BY DEFAULT
+  (`SCANNER_STOP_ENABLED`, default false):** when on, a held position is dumped with a GTC
+  sell at `SCANNER_EXIT_PRICE` (0.10) if a filter blocks the side we hold (held Up + high
+  level/bearish FVG, or held Down + low level/bullish FVG). It is **off** because a 66/66
+  audit (2026-06-20) found **every** stop was a winner-dump — the scanner buys the 0.99
+  favorite (which ~always wins) and the filters fire on its own move toward winning, so the
+  stop only ever sold winners (~$2k lost in 2 days). The filters are therefore **entry-only**
+  (gate buys + cancel an unfilled resting buy; never dump a held position; hold to
+  resolution). The live
   price (forming-candle wick) streams from the **Binance kline WebSocket**; the slower
   levels/zones refresh from REST every `SCANNER_LIQ_POLL_SECS`. **FVG hit** = the 5m candle
   opened INSIDE the gap OR opened outside and wicked IN; detected on CLOSED candles only
@@ -57,9 +63,9 @@ Two strategies, selected by env:
   × the coin's avg candle range. A `SCANNER_FILTER_BLANKET` toggle makes any level/FVG hit block
   BOTH sides. A third **doji filter** (`SCANNER_DOJI_FILTER`, `doji.rs`, "Doji signals" port) blocks BOTH
   sides at ENTRY if the current 5m candle is a doji (`|open-close| ≤
-  (high-low)·SCANNER_DOJI_PRECISION`, default 0.15, live on the forming candle); its STOP is
-  **DIRECTIONAL** — dumps a held position only if the doji leans AGAINST it (held Up + bearish
-  doji, held Down + bullish doji), else holds (don't dump a near-tie that may still pay 1.0).
+  (high-low)·SCANNER_DOJI_PRECISION`, default 0.15, live on the forming candle); its STOP (only
+  if `SCANNER_STOP_ENABLED`, off by default) is **DIRECTIONAL** — would dump a held position
+  only if the doji leans AGAINST it (held Up + bearish doji, held Down + bullish doji).
   Coins with no Binance USDT pair (HYPE)
   aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
@@ -210,7 +216,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `<asset>-updown-<dur>-*` markets; empty = all), `NINETYNINE_DURATIONS` (default
 `5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
 `SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
-(0.99), `SCANNER_EXIT_PRICE` (0.10, liquidity-stop floor), `SCANNER_DISCOVERY_SECS`
+(0.99), `SCANNER_STOP_ENABLED` (default false — held-position stop OFF; filters entry-only),
+`SCANNER_EXIT_PRICE` (0.10, stop floor, used only when stop enabled), `SCANNER_DISCOVERY_SECS`
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
 liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels/FVG cadence),
 `BINANCE_REST_URL`, `BINANCE_WS_URL` (live price); FVG filter `SCANNER_FVG_FILTER`,

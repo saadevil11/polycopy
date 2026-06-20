@@ -87,6 +87,13 @@ pub struct Config {
     // (no trade) and dump a held position. Evaluated live on the forming candle.
     pub scanner_doji_filter: bool,
     pub scanner_doji_precision: f64, // doji max body as a fraction of range (indicator default 0.15)
+    // Held-position STOP master switch. The liquidity/FVG/doji filters ALWAYS gate ENTRY
+    // (don't buy a blocked side); this controls whether they ALSO dump a position we
+    // already hold. DEFAULT OFF: a 66/66 audit (2026-06-20) found EVERY stop was a
+    // winner-dump — we buy the 0.99 favorite (which ~always wins) and the filters fire on
+    // its own move toward winning, so the stop only ever sold winners (~$2k lost in 2 days).
+    // Filters are entry-only; leave this off unless the stop is re-validated.
+    pub scanner_stop_enabled: bool,
 
     // sell-with-target mode (brownfox entry, but exit = market-sell ALL on the
     // target's first sell, run on a non-blocking worker).
@@ -246,6 +253,7 @@ impl Config {
             scanner_filter_blanket: env_bool("SCANNER_FILTER_BLANKET", false),
             scanner_doji_filter: env_bool("SCANNER_DOJI_FILTER", false),
             scanner_doji_precision: env_f64("SCANNER_DOJI_PRECISION", 0.15).max(0.0001),
+            scanner_stop_enabled: env_bool("SCANNER_STOP_ENABLED", false),
             sell_with_target_enabled: env_bool("USE_SELL_WITH_TARGET_MODE", false),
             sell_with_target_trade_size_shares: env_f64("SELL_WITH_TARGET_TRADE_SIZE_SHARES", 50.0).max(5.0),
             sell_with_target_reconcile: Duration::from_millis(env_u64("SELL_WITH_TARGET_RECONCILE_MS", 3000)),
