@@ -133,9 +133,13 @@ impl Scanner {
             info!("🔭 99c-scanner: filter mode = BLANKET — any liquidity level / FVG hit blocks BOTH sides (no up, no down)");
         }
         if st.cfg.scanner_stop_enabled {
-            info!("🔭 99c-scanner: held-position STOP = ON (SCANNER_STOP_ENABLED=true) — filters can dump a held position. NOTE: a 66/66 audit found every stop was a winner-dump.");
-        } else {
-            info!("🔭 99c-scanner: held-position STOP = OFF — filters are ENTRY-ONLY (never dump a held position); positions are held to resolution");
+            info!("🔭 99c-scanner: liquidity/FVG STOP = ON (SCANNER_STOP_ENABLED=true) — can dump a held position. NOTE: a 66/66 audit found every stop was a winner-dump.");
+        }
+        if st.cfg.scanner_doji_stop_enabled {
+            info!("🔭 99c-scanner: DOJI STOP = ON (SCANNER_DOJI_STOP_ENABLED=true) — dump a held position on ANY doji (non-directional) @ {:.2} while the window is live", st.cfg.scanner_exit_price);
+        }
+        if !st.cfg.scanner_stop_enabled && !st.cfg.scanner_doji_stop_enabled {
+            info!("🔭 99c-scanner: held-position STOP = OFF — filters are ENTRY-ONLY (never dump a held position); positions held to resolution");
         }
 
         // Initial discovery so the first WS connect has tokens; resume persisted state.
@@ -676,16 +680,17 @@ impl Scanner {
             }
         }
 
-        // STOP (DISABLED BY DEFAULT — `SCANNER_STOP_ENABLED`): for positions we HOLD whose
-        // market is still live, if the coin moves AGAINST the side we hold — held Up + (high
-        // level / bearish FVG / bearish doji), or held Down + (low level / bullish FVG /
-        // bullish doji) — dump with a GTC sell at the exit price (sweeps the bids to the
-        // floor). A 66/66 audit (2026-06-20) found EVERY such stop was a winner-dump: we buy
-        // the 0.99 favorite (which ~always wins) and the filters fire on its OWN move toward
-        // winning, so the stop only ever sold winners. It is therefore OFF by default and the
-        // filters are ENTRY-ONLY (they still gate buys + cancel an unfilled resting buy above,
-        // but never dump a held position). Flip the env to true only if re-validated.
-        if self.cfg.scanner_stop_enabled {
+        // STOP — dump a HELD position (GTC sell at the exit price, sweeping the bids to the
+        // floor) while its market window is still live. TWO independent switches, BOTH OFF by
+        // default:
+        //   • SCANNER_STOP_ENABLED — the liquidity/FVG (+ legacy directional doji) stop. A
+        //     66/66 audit (2026-06-20) found EVERY such stop was a winner-dump (we buy the 0.99
+        //     favorite, which ~always wins, and the filters fire on its own move toward
+        //     winning), so it stays OFF and those filters are entry-only.
+        //   • SCANNER_DOJI_STOP_ENABLED — a NON-directional doji stop (operator request): dump
+        //     on ANY doji while holding, regardless of lean (theory: losses come from a hard
+        //     pull-back that prints a doji). Independent of SCANNER_STOP_ENABLED.
+        if self.cfg.scanner_stop_enabled || self.cfg.scanner_doji_stop_enabled {
             for (token, rec) in self.store.scan_filled() {
                 // asset+side are only known while the market is live (in the discovery
                 // map); once it resolves the token drops out and the position settles.
@@ -706,18 +711,27 @@ impl Scanner {
                 if (now_ms() / 1000) >= end_ts {
                     continue;
                 }
-                // signal() returns no blocks when a filter is disabled or has no data.
-                // Blanket mode dumps on ANY hit (either side); directional only on our side.
+                // Liquidity/FVG stop — directional/blanket, ONLY under SCANNER_STOP_ENABLED.
                 let blanket = self.cfg.scanner_filter_blanket;
-                let liq = self.liq.signal(&asset);
-                let fvg = self.fvg.signal(&asset);
-                let liq_hit = signal_blocks(&liq, is_up, blanket);
-                let fvg_hit = signal_blocks(&fvg, is_up, blanket);
-                // Doji stop is ALWAYS directional (ignores blanket): dump only if the doji
-                // leans AGAINST the held side — held Up + bearish doji, or Down + bullish.
-                // A doji leaning our way is left to ride (it may still pay the full 1.0).
-                let dstop = self.doji.stop_signal(&asset);
-                let doji_hit = if is_up { dstop.block_up } else { dstop.block_down };
+                let (liq_hit, fvg_hit) = if self.cfg.scanner_stop_enabled {
+                    (
+                        signal_blocks(&self.liq.signal(&asset), is_up, blanket),
+                        signal_blocks(&self.fvg.signal(&asset), is_up, blanket),
+                    )
+                } else {
+                    (false, false)
+                };
+                // Doji stop — NON-directional (dump on ANY doji) under SCANNER_DOJI_STOP_ENABLED;
+                // otherwise the legacy DIRECTIONAL doji (held Up + bearish / Down + bullish),
+                // and only when SCANNER_STOP_ENABLED.
+                let doji_hit = if self.cfg.scanner_doji_stop_enabled {
+                    self.doji.is_doji(&asset).unwrap_or(false)
+                } else if self.cfg.scanner_stop_enabled {
+                    let dstop = self.doji.stop_signal(&asset);
+                    if is_up { dstop.block_up } else { dstop.block_down }
+                } else {
+                    false
+                };
                 if !liq_hit && !fvg_hit && !doji_hit {
                     continue;
                 }
@@ -730,7 +744,7 @@ impl Scanner {
                     w.push(if blanket { "an FVG".into() } else if is_up { "a bearish FVG".into() } else { "a bullish FVG".into() });
                 }
                 if doji_hit {
-                    w.push(if is_up { "a bearish doji".into() } else { "a bullish doji".into() });
+                    w.push(if self.cfg.scanner_doji_stop_enabled { "a doji".into() } else if is_up { "a bearish doji".into() } else { "a bullish doji".into() });
                 }
                 let what = format!("held {side} hit {}", w.join(" + "));
                 let mut held = self.exec.order_matched(&rec.order_id).await.unwrap_or(0.0);

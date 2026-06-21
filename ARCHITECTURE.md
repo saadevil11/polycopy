@@ -63,9 +63,12 @@ Two strategies, selected by env:
   × the coin's avg candle range. A `SCANNER_FILTER_BLANKET` toggle makes any level/FVG hit block
   BOTH sides. A third **doji filter** (`SCANNER_DOJI_FILTER`, `doji.rs`, "Doji signals" port) blocks BOTH
   sides at ENTRY if the current 5m candle is a doji (`|open-close| ≤
-  (high-low)·SCANNER_DOJI_PRECISION`, default 0.15, live on the forming candle); its STOP (only
-  if `SCANNER_STOP_ENABLED`, off by default) is **DIRECTIONAL** — would dump a held position
-  only if the doji leans AGAINST it (held Up + bearish doji, held Down + bullish doji).
+  (high-low)·SCANNER_DOJI_PRECISION`, default 0.15, live on the forming candle). Two optional
+  doji STOPs, **both off by default**: the legacy **DIRECTIONAL** one under `SCANNER_STOP_ENABLED`
+  (dump only if the doji leans AGAINST the held side), and a **NON-directional**
+  `SCANNER_DOJI_STOP_ENABLED` (operator override) that dumps a held position on **ANY** doji
+  regardless of lean, at `SCANNER_EXIT_PRICE` while the window is live (experimental — the 0/66
+  audit applies).
   Coins with no Binance USDT pair (HYPE)
   aren't traded while a filter is on.
 - **sell-with-target** (`USE_SELL_WITH_TARGET_MODE=true`) — **FAK market-buy** entry
@@ -222,7 +225,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels/FVG cadence),
 `BINANCE_REST_URL`, `BINANCE_WS_URL` (live price); FVG filter `SCANNER_FVG_FILTER`,
 `SCANNER_FVG_AUTO`, `SCANNER_FVG_THRESHOLD_PCT`; blanket `SCANNER_FILTER_BLANKET`; doji
-`SCANNER_DOJI_FILTER`, `SCANNER_DOJI_PRECISION`. Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
+`SCANNER_DOJI_FILTER`, `SCANNER_DOJI_PRECISION`, `SCANNER_DOJI_STOP_ENABLED` (non-directional
+doji stop, off). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.
 
 ## 6. Build / run

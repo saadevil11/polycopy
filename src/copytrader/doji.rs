@@ -41,7 +41,8 @@ struct Candle {
 }
 
 pub struct Doji {
-    enabled: bool,
+    enabled: bool,      // entry filter (SCANNER_DOJI_FILTER): block a 0.99 buy on a doji
+    stop_enabled: bool, // non-directional held-position stop (SCANNER_DOJI_STOP_ENABLED)
     precision: f64,
     rest_url: String,
     ws_url: String,
@@ -66,6 +67,7 @@ impl Doji {
             .expect("http client");
         Doji {
             enabled: cfg.scanner_doji_filter,
+            stop_enabled: cfg.scanner_doji_stop_enabled,
             precision: cfg.scanner_doji_precision.max(0.0001),
             rest_url: cfg.binance_rest_url.clone(),
             ws_url: cfg.binance_ws_url.clone(),
@@ -79,15 +81,20 @@ impl Doji {
     /// Live forming-candle OHLC via the Binance kline WS (sub-second); a slow REST seed so
     /// there's data before the WS warms up and to self-heal a WS gap.
     pub async fn run(self: Arc<Self>) {
-        if !self.enabled {
-            info!("🕯️ doji filter: OFF (SCANNER_DOJI_FILTER=false)");
+        if !self.enabled && !self.stop_enabled {
+            info!("🕯️ doji: OFF (SCANNER_DOJI_FILTER=false, SCANNER_DOJI_STOP_ENABLED=false)");
             return;
         }
-        info!(
-            "🕯️ doji filter: ON — skip a 0.99 buy if {}'s 5m candle is a doji (|open-close| ≤ {:.0}% of range); held positions dumped only if the doji leans AGAINST the side (bearish vs Up / bullish vs Down); live via Binance WS",
-            self.coins.join("/"),
-            self.precision * 100.0
-        );
+        if self.enabled {
+            info!(
+                "🕯️ doji ENTRY filter: ON — skip a 0.99 buy if {}'s 5m candle is a doji (|open-close| ≤ {:.0}% of range), live via Binance WS",
+                self.coins.join("/"),
+                self.precision * 100.0
+            );
+        }
+        if self.stop_enabled {
+            info!("🕯️ doji STOP: ON (SCANNER_DOJI_STOP_ENABLED) — dump a HELD position with a GTC sell @ the exit price on ANY doji (non-directional), while the market window is live");
+        }
         let work: Vec<(String, &'static str)> = self
             .coins
             .iter()
@@ -250,6 +257,14 @@ impl Doji {
             },
             None => FilterSignal::default(),
         }
+    }
+
+    /// NON-directional: true if the coin's live forming 5m candle is currently a doji
+    /// (regardless of lean). For the SCANNER_DOJI_STOP_ENABLED held-position stop. Independent
+    /// of the entry-filter `enabled` flag; needs the candle feed (runs when either toggle is
+    /// on). None = not evaluable (no Binance pair / no data).
+    pub fn is_doji(&self, coin: &str) -> Option<bool> {
+        self.eval(coin).map(|(doji, _, _)| doji)
     }
 
     /// (is_doji, bullish, bearish) for the live forming candle, or None if not evaluable
