@@ -42,7 +42,9 @@ Two strategies, selected by env:
   Sonarlab" port): swing pivots (15L/5R, wick) pooled from **5m+15m+30m** — touching a
   **high** level (resistance) blocks **Up**, a **low** level (support) blocks **Down**.
   (2) **Fair Value Gaps** (`SCANNER_FVG_FILTER`, `fvg.rs`, "Fair Value Gap [LuxAlgo]" port):
-  un-mitigated 3-candle gaps on **5m+15m** — inside a **bearish** FVG blocks **Up**, a
+  un-mitigated 3-candle gaps on **5m+15m** (timeframes set by `SCANNER_FVG_TFS`, default `5m,15m`;
+  add `1m,3m` to also gate on finer gaps — but 1m gaps are tiny/frequent so raise the threshold)
+  — inside a **bearish** FVG blocks **Up**, a
   **bullish** FVG blocks **Down**. Each filter returns a `FilterSignal{block_up, block_down,
   evaluable}`. **Entry:** the side being bought must be unblocked on **both** filters (and
   both must be evaluable — no Binance pair / no data ⇒ skip). **STOP — DISABLED BY DEFAULT
@@ -224,7 +226,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
 liquidity filter `SCANNER_LIQUIDITY_FILTER`, `SCANNER_LIQ_POLL_SECS` (REST levels/FVG cadence),
 `BINANCE_REST_URL`, `BINANCE_WS_URL` (live price); FVG filter `SCANNER_FVG_FILTER`,
-`SCANNER_FVG_AUTO`, `SCANNER_FVG_THRESHOLD_PCT`; blanket `SCANNER_FILTER_BLANKET`; doji
+`SCANNER_FVG_AUTO`, `SCANNER_FVG_THRESHOLD_PCT`, `SCANNER_FVG_TFS` (default `5m,15m`; add
+`1m,3m` for finer gaps); blanket `SCANNER_FILTER_BLANKET`; doji
 `SCANNER_DOJI_FILTER`, `SCANNER_DOJI_PRECISION`, `SCANNER_DOJI_STOP_ENABLED` (non-directional
 doji stop, off). Infra: `COPY_DATA_DIR`, `DASHBOARD_PORT`,
 `LOG_LEVEL`.

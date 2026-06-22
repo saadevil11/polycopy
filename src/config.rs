@@ -78,6 +78,11 @@ pub struct Config {
     pub scanner_fvg_threshold_pct: f64, // min gap size as % of price (used when auto is OFF; 0 = any gap)
     pub scanner_fvg_auto: bool,         // adaptive threshold = auto_factor × the coin's avg candle range
     pub scanner_fvg_auto_factor: f64,   // 1.0 = a full avg candle (few gaps), 0.7 = good middle, 0 = all
+    // Binance timeframes the FVG filter pools gaps from (default "5m,15m"). Add "1m,3m" to also
+    // block on finer-TF gaps. WARNING: 1m gaps are tiny + numerous; with threshold 0 (every gap)
+    // they will tap nearly every window and can block most buys — raise SCANNER_FVG_THRESHOLD_PCT
+    // when widening. "5m" is always included (it is the acting window candle).
+    pub scanner_fvg_tfs: Vec<String>,
     // BLANKET mode: when true, ANY liquidity level OR FVG hit blocks BOTH sides of that
     // market (no Up, no Down) instead of only the directional side. Applies to entry,
     // the resting-buy cancel, and the held-position stop.
@@ -256,6 +261,13 @@ impl Config {
             // threshold becomes AUTO_FACTOR × the coin's avg candle range instead of the % above.
             scanner_fvg_auto: env_bool("SCANNER_FVG_AUTO", false),
             scanner_fvg_auto_factor: env_f64("SCANNER_FVG_AUTO_FACTOR", 0.7).max(0.0),
+            scanner_fvg_tfs: {
+                let mut v = env_list("SCANNER_FVG_TFS", "5m,15m");
+                if !v.iter().any(|t| t == "5m") {
+                    v.push("5m".to_string()); // the acting candle is always the 5m window candle
+                }
+                v
+            },
             scanner_filter_blanket: env_bool("SCANNER_FILTER_BLANKET", false),
             scanner_doji_filter: env_bool("SCANNER_DOJI_FILTER", false),
             scanner_doji_precision: env_f64("SCANNER_DOJI_PRECISION", 0.15).max(0.0001),

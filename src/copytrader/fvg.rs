@@ -33,7 +33,6 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::copytrader::FilterSignal;
 
-const TFS: [&str; 2] = ["5m", "15m"];
 const LIMIT: u32 = 120; // candles fetched per (coin,tf): plenty of history for FVGs near price
 
 #[derive(Default, Clone)]
@@ -52,6 +51,7 @@ pub struct Fvg {
     thr: f64,  // fixed gap threshold as a fraction of price (used when auto is off)
     auto: bool, // adaptive threshold = auto_factor × the coin's avg candle range
     auto_factor: f64, // 1.0 = a full avg candle, 0.7 = good middle, 0 = all gaps
+    tfs: Vec<String>, // Binance timeframes pooled for FVG zones (default 5m,15m; 5m always present)
     /// coins we filter (those with a Binance USDT pair).
     coins: Vec<String>,
     http: reqwest::Client,
@@ -80,6 +80,7 @@ impl Fvg {
             thr: (cfg.scanner_fvg_threshold_pct / 100.0).max(0.0),
             auto: cfg.scanner_fvg_auto,
             auto_factor: cfg.scanner_fvg_auto_factor.max(0.0),
+            tfs: cfg.scanner_fvg_tfs.clone(),
             coins,
             http,
             series: Mutex::new(HashMap::new()),
@@ -96,16 +97,18 @@ impl Fvg {
         info!(
             "🟦 fvg filter: ON — skip a 0.99 buy if {}'s current 5m candle TAPS (opened outside, wicked in) an un-mitigated fair value gap on {} (min size {}); live price via Binance WS, zones refreshed every {}s",
             self.coins.join("/"),
-            TFS.join("/"),
+            self.tfs.join("/"),
             if self.auto { format!("auto ×{:.2} avg-candle", self.auto_factor) } else { format!("{:.3}%", self.thr * 100.0) },
             self.poll.as_secs()
         );
-        let work: Vec<(String, &'static str, &'static str)> = self
-            .coins
-            .iter()
-            .filter_map(|c| binance_symbol(c).map(|s| (c.clone(), s)))
-            .flat_map(|(c, s)| TFS.iter().map(move |tf| (c.clone(), *tf, s)))
-            .collect();
+        let mut work: Vec<(String, String, &'static str)> = Vec::new();
+        for c in &self.coins {
+            if let Some(s) = binance_symbol(c) {
+                for tf in &self.tfs {
+                    work.push((c.clone(), tf.clone(), s));
+                }
+            }
+        }
         if work.is_empty() {
             warn!("🟦 fvg filter: no coins with a Binance pair — nothing to track");
             return;
@@ -137,12 +140,14 @@ impl Fvg {
     }
 
     async fn ws_loop(&self) {
-        let streams: Vec<String> = self
-            .coins
-            .iter()
-            .filter_map(|c| binance_symbol(c))
-            .flat_map(|s| TFS.iter().map(move |tf| format!("{}@kline_{}", s.to_lowercase(), tf)))
-            .collect();
+        let mut streams: Vec<String> = Vec::new();
+        for c in &self.coins {
+            if let Some(s) = binance_symbol(c) {
+                for tf in &self.tfs {
+                    streams.push(format!("{}@kline_{}", s.to_lowercase(), tf));
+                }
+            }
+        }
         if streams.is_empty() {
             return;
         }
@@ -274,7 +279,7 @@ impl Fvg {
             _ => return FilterSignal::default(),
         };
         let mut zones: Vec<(f64, f64, bool)> = Vec::new();
-        for tf in TFS {
+        for tf in &self.tfs {
             match map.get(&format!("{coin}:{tf}")) {
                 Some(s) => zones.extend(s.zones.iter().copied()),
                 None => return FilterSignal::default(),
