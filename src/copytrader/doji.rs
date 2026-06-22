@@ -41,8 +41,9 @@ struct Candle {
 }
 
 pub struct Doji {
-    enabled: bool,      // entry filter (SCANNER_DOJI_FILTER): block a 0.99 buy on a doji
-    stop_enabled: bool, // non-directional held-position stop (SCANNER_DOJI_STOP_ENABLED)
+    enabled: bool,         // entry filter (SCANNER_DOJI_FILTER): block a 0.99 buy on a doji
+    stop_enabled: bool,    // non-directional held-position stop (SCANNER_DOJI_STOP_ENABLED)
+    min_move_enabled: bool, // the scanner's min-move entry gate needs this candle feed (open+price)
     precision: f64,
     rest_url: String,
     ws_url: String,
@@ -68,6 +69,7 @@ impl Doji {
         Doji {
             enabled: cfg.scanner_doji_filter,
             stop_enabled: cfg.scanner_doji_stop_enabled,
+            min_move_enabled: cfg.scanner_min_move_pct > 0.0,
             precision: cfg.scanner_doji_precision.max(0.0001),
             rest_url: cfg.binance_rest_url.clone(),
             ws_url: cfg.binance_ws_url.clone(),
@@ -81,9 +83,12 @@ impl Doji {
     /// Live forming-candle OHLC via the Binance kline WS (sub-second); a slow REST seed so
     /// there's data before the WS warms up and to self-heal a WS gap.
     pub async fn run(self: Arc<Self>) {
-        if !self.enabled && !self.stop_enabled {
-            info!("🕯️ doji: OFF (SCANNER_DOJI_FILTER=false, SCANNER_DOJI_STOP_ENABLED=false)");
+        if !self.enabled && !self.stop_enabled && !self.min_move_enabled {
+            info!("🕯️ doji: OFF (no entry filter, doji stop, or min-move gate)");
             return;
+        }
+        if self.min_move_enabled {
+            info!("🕯️ doji: streaming the 5m candle feed for the scanner's min-move entry gate");
         }
         if self.enabled {
             info!(
@@ -256,6 +261,21 @@ impl Doji {
                 evaluable: true,
             },
             None => FilterSignal::default(),
+        }
+    }
+
+    /// Signed % of the live forming 5m candle's current price vs its open:
+    /// (close-open)/open*100. Positive = Up leading, negative = Down leading. For the
+    /// scanner's min-move entry gate (how far the favorite is from the window open). None if
+    /// no Binance pair / no data / open<=0. Independent of the entry-filter `enabled` flag.
+    pub fn lead_pct(&self, coin: &str) -> Option<f64> {
+        if binance_symbol(coin).is_none() {
+            return None;
+        }
+        let map = self.cur.lock().unwrap();
+        match map.get(coin) {
+            Some(c) if c.open > 0.0 && c.close > 0.0 => Some((c.close - c.open) / c.open * 100.0),
+            _ => None,
         }
     }
 

@@ -132,6 +132,11 @@ impl Scanner {
         if st.cfg.scanner_filter_blanket {
             info!("🔭 99c-scanner: filter mode = BLANKET — any liquidity level / FVG hit blocks BOTH sides (no up, no down)");
         }
+        if st.cfg.scanner_min_move_pct > 0.0 {
+            info!("🔭 99c-scanner: MIN-MOVE gate = ON — only buy 0.99 if the favorite is ≥ {:.2}% from the window open (skips near-ties)", st.cfg.scanner_min_move_pct);
+        } else {
+            info!("🔭 99c-scanner: MIN-MOVE gate = OFF (SCANNER_MIN_MOVE_PCT=0) — buys every 0.99 favorite incl. near-ties");
+        }
         if st.cfg.scanner_stop_enabled {
             info!("🔭 99c-scanner: liquidity/FVG STOP = ON (SCANNER_STOP_ENABLED=true) — can dump a held position. NOTE: a 66/66 audit found every stop was a winner-dump.");
         }
@@ -515,6 +520,30 @@ impl Scanner {
                 info!("🔭 99c-scanner: SKIP {} — {}", label(&info.title, &info.outcome, token), reason);
             }
             return;
+        }
+        // MIN-MOVE entry gate (SCANNER_MIN_MOVE_PCT > 0): only take the 0.99 buy if the
+        // favorite is ALREADY at least this % from the window open — buying Up needs spot
+        // >= open+pct, Down needs spot <= open-pct. Near-ties (tiny move) are coin-flips we
+        // overpay 0.99 for and routinely reverse at the wire; a 2.8-day backtest: gate 0 =>
+        // 14% loss rate, 0.15 => 0.3%. No live candle data while the gate is on => skip.
+        let min_move = self.cfg.scanner_min_move_pct;
+        if min_move > 0.0 {
+            let lead = self.doji.lead_pct(&info.asset);
+            let ok = match lead {
+                Some(l) => if is_up { l >= min_move } else { l <= -min_move },
+                None => false,
+            };
+            if !ok {
+                if self.skip_logged.lock().unwrap().insert(token.to_string()) {
+                    let side = if is_up { "Up" } else { "Down" };
+                    let shown = lead.map(|l| format!("{l:+.3}%")).unwrap_or_else(|| "no data".into());
+                    info!(
+                        "🔭 99c-scanner: SKIP {} — buying {side} but move from open is {} (need ≥ {:.2}% the right way; near-tie)",
+                        label(&info.title, &info.outcome, token), shown, min_move
+                    );
+                }
+                return;
+            }
         }
         let buy_price = snap_price(self.cfg.scanner_buy_price, info.tick);
         if buy_price <= 0.0 || buy_price >= 1.0 {

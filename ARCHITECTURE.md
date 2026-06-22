@@ -47,7 +47,12 @@ Two strategies, selected by env:
   — inside a **bearish** FVG blocks **Up**, a
   **bullish** FVG blocks **Down**. Each filter returns a `FilterSignal{block_up, block_down,
   evaluable}`. **Entry:** the side being bought must be unblocked on **both** filters (and
-  both must be evaluable — no Binance pair / no data ⇒ skip). **STOP — DISABLED BY DEFAULT
+  both must be evaluable — no Binance pair / no data ⇒ skip). A **MIN-MOVE entry gate**
+  (`SCANNER_MIN_MOVE_PCT`, default 0 = off) additionally requires the favorite to be ≥ that %
+  from the 5m window open before buying (buy Up ⇒ spot ≥ open+pct, Down ⇒ spot ≤ open−pct),
+  skipping the near-ties we overpay 0.99 for (2.8-day backtest: gate 0 → **14%** loss rate,
+  0.10 → ~break-even, 0.15 → **0.3%**). Spot comes from the Binance 5m feed (the doji module
+  streams it). **STOP — DISABLED BY DEFAULT
   (`SCANNER_STOP_ENABLED`, default false):** when on, a held position is dumped with a GTC
   sell at `SCANNER_EXIT_PRICE` (0.10) if a filter blocks the side we hold (held Up + high
   level/bearish FVG, or held Down + low level/bullish FVG). It is **off** because a 66/66
@@ -220,7 +225,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `NINETYNINE_BUY_MAX_AGE_SECS`, `NINETYNINE_ASSETS` (only copy
 `<asset>-updown-<dur>-*` markets; empty = all), `NINETYNINE_DURATIONS` (default
 `5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
-`SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_TRIGGER_ASK`
+`SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_MIN_MOVE_PCT` (min %
+from window open to enter; 0=off), `SCANNER_TRIGGER_ASK`
 (0.99), `SCANNER_STOP_ENABLED` (default false — held-position stop OFF; filters entry-only),
 `SCANNER_EXIT_PRICE` (0.10, stop floor, used only when stop enabled), `SCANNER_DISCOVERY_SECS`
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);

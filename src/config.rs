@@ -62,6 +62,11 @@ pub struct Config {
     pub scanner_trade_size_shares: f64, // shares per market (>= 5)
     pub scanner_buy_price: f64,         // GTC buy limit price (default 0.99)
     pub scanner_trigger_ask: f64,       // fire when best_ask >= this and < 1.0 (default 0.99)
+    // MIN-MOVE entry gate: only take the 0.99 buy if the favorite is already at least this %
+    // away from the 5m window open (buy Up needs spot >= open+pct, Down needs spot <= open-pct).
+    // Near-ties are coin-flips we overpay 0.99 for; a 2.8-day backtest: 0 -> 14% loss rate,
+    // 0.10 -> ~break-even, 0.15 -> 0.3% losses. 0 = off (default). Spot from the Binance 5m feed.
+    pub scanner_min_move_pct: f64,
     pub scanner_exit_price: f64,        // liquidity-stop GTC sell price if a held market touches a level (0.10)
     pub scanner_discovery: Duration,    // Gamma re-discovery cadence (new 5m markets open every 5m)
     // Liquidity-level avoidance filter: skip a 0.99 buy when the coin's price is
@@ -247,6 +252,7 @@ impl Config {
             scanner_trade_size_shares: env_f64("SCANNER_TRADE_SIZE_SHARES", 10.0).max(5.0),
             scanner_buy_price: env_f64("SCANNER_BUY_PRICE", 0.99),
             scanner_trigger_ask: env_f64("SCANNER_TRIGGER_ASK", 0.99),
+            scanner_min_move_pct: env_f64("SCANNER_MIN_MOVE_PCT", 0.0).max(0.0),
             scanner_exit_price: env_f64("SCANNER_EXIT_PRICE", 0.10),
             scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
             scanner_liquidity_filter: env_bool("SCANNER_LIQUIDITY_FILTER", true),
