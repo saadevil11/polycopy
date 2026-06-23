@@ -67,6 +67,10 @@ pub struct Config {
     // Near-ties are coin-flips we overpay 0.99 for; a 2.8-day backtest: 0 -> 14% loss rate,
     // 0.10 -> ~break-even, 0.15 -> 0.3% losses. 0 = off (default). Spot from the Binance 5m feed.
     pub scanner_min_move_pct: f64,
+    // No-trade hours window in ET (24h), start-inclusive / end-exclusive, wraps midnight.
+    // Some((21,3)) = place NO buys from 9pm to 3am ET. None = always trade. ET assumed EDT
+    // (UTC-4); shift the configured hours by 1 for EST (winter). Set via SCANNER_NO_TRADE_ET.
+    pub scanner_no_trade_et: Option<(u8, u8)>,
     pub scanner_exit_price: f64,        // liquidity-stop GTC sell price if a held market touches a level (0.10)
     pub scanner_discovery: Duration,    // Gamma re-discovery cadence (new 5m markets open every 5m)
     // Liquidity-level avoidance filter: skip a 0.99 buy when the coin's price is
@@ -253,6 +257,23 @@ impl Config {
             scanner_buy_price: env_f64("SCANNER_BUY_PRICE", 0.99),
             scanner_trigger_ask: env_f64("SCANNER_TRIGGER_ASK", 0.99),
             scanner_min_move_pct: env_f64("SCANNER_MIN_MOVE_PCT", 0.0).max(0.0),
+            scanner_no_trade_et: {
+                // "FROM-TO" in ET 24h hours, e.g. "21-3" = no trading 9pm..3am ET. Empty = off.
+                let raw = env_str("SCANNER_NO_TRADE_ET", "");
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    None
+                } else {
+                    let p: Vec<&str> = raw.split('-').collect();
+                    match (
+                        p.first().and_then(|s| s.trim().parse::<u8>().ok()),
+                        p.get(1).and_then(|s| s.trim().parse::<u8>().ok()),
+                    ) {
+                        (Some(f), Some(t)) if p.len() == 2 && f < 24 && t < 24 => Some((f, t)),
+                        _ => None,
+                    }
+                }
+            },
             scanner_exit_price: env_f64("SCANNER_EXIT_PRICE", 0.10),
             scanner_discovery: Duration::from_secs(env_u64("SCANNER_DISCOVERY_SECS", 30).max(5)),
             scanner_liquidity_filter: env_bool("SCANNER_LIQUIDITY_FILTER", true),

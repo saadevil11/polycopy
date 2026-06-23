@@ -137,6 +137,9 @@ impl Scanner {
         } else {
             info!("🔭 99c-scanner: MIN-MOVE gate = OFF (SCANNER_MIN_MOVE_PCT=0) — buys every 0.99 favorite incl. near-ties");
         }
+        if let Some((f, t)) = st.cfg.scanner_no_trade_et {
+            info!("🔭 99c-scanner: NO-TRADE hours = {:02}:00–{:02}:00 ET — no buys placed in this window (ET=EDT/UTC−4)", f, t);
+        }
         if st.cfg.scanner_stop_enabled {
             info!("🔭 99c-scanner: liquidity/FVG STOP = ON (SCANNER_STOP_ENABLED=true) — can dump a held position. NOTE: a 66/66 audit found every stop was a winner-dump.");
         }
@@ -440,12 +443,16 @@ impl Scanner {
                 format!("{}{}@{} U{:.3} D{:.3}", mark, coin.to_uppercase(), hhmm, u, d)
             })
             .collect();
-        info!("🔭 99c-scanner books (ask; trigger {:.2}; 🔥=tradable ⚠=bad book): {}", trig, parts.join("  |  "));
+        let bl = if in_no_trade_window(self.cfg.scanner_no_trade_et) { "[NO-TRADE HOURS] " } else { "" };
+        info!("🔭 99c-scanner {}books (ask; trigger {:.2}; 🔥=tradable ⚠=bad book): {}", bl, trig, parts.join("  |  "));
     }
 
     /// If `best_ask` is in [trigger, 1.0) and we haven't claimed this token yet,
     /// atomically claim it and place the GTC buy on a detached worker.
     async fn maybe_trigger(&self, token: &str, best_ask: f64) {
+        if in_no_trade_window(self.cfg.scanner_no_trade_et) {
+            return; // ET no-trade hours — place no buys (held positions still ride to resolution)
+        }
         if !(best_ask >= self.cfg.scanner_trigger_ask && best_ask < 1.0) {
             return;
         }
@@ -816,6 +823,28 @@ async fn open_buy_order(exec: &Arc<Executor>, token: &str, price: f64) -> Option
 fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
+/// Current ET hour (0–23), assuming EDT = UTC−4. (Shift configured hours by 1 in EST/winter.)
+fn et_hour_now() -> u8 {
+    use chrono::Timelike;
+    ((chrono::Utc::now().hour() + 24 - 4) % 24) as u8
+}
+/// Hour `h` is in `[from, to)`, wrapping midnight when from > to. `from == to` => never.
+fn hour_in_window(h: u8, from: u8, to: u8) -> bool {
+    if from == to {
+        false
+    } else if from < to {
+        h >= from && h < to
+    } else {
+        h >= from || h < to
+    }
+}
+/// True if now falls in the ET no-trade window `[from, to)` (wraps midnight when from > to).
+fn in_no_trade_window(win: Option<(u8, u8)>) -> bool {
+    match win {
+        Some((from, to)) => hour_in_window(et_hour_now(), from, to),
+        None => false,
+    }
+}
 fn now_str() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
@@ -892,6 +921,23 @@ fn label(title: &str, outcome: &str, token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_trade_window_wraps_midnight() {
+        // 9pm-3am ET (21..3): blackout 21,22,23,0,1,2; resumes at 3am.
+        for h in [21u8, 22, 23, 0, 1, 2] {
+            assert!(hour_in_window(h, 21, 3), "hour {h} should be blacked out");
+        }
+        for h in [3u8, 4, 12, 20] {
+            assert!(!hour_in_window(h, 21, 3), "hour {h} should be tradable");
+        }
+        // non-wrapping window 9..17
+        assert!(hour_in_window(9, 9, 17));
+        assert!(!hour_in_window(17, 9, 17));
+        assert!(!hour_in_window(8, 9, 17));
+        // degenerate from==to => never blacks out
+        assert!(!hour_in_window(5, 5, 5));
+    }
 
     #[test]
     fn book_sanity_invariant() {

@@ -226,7 +226,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `<asset>-updown-<dur>-*` markets; empty = all), `NINETYNINE_DURATIONS` (default
 `5m,15m`; set `5m` to disable 15-minute). 99c-scanner: `USE_99C_SCANNER_MODE`,
 `SCANNER_TRADE_SIZE_SHARES` (≥5), `SCANNER_BUY_PRICE` (0.99), `SCANNER_MIN_MOVE_PCT` (min %
-from window open to enter; 0=off), `SCANNER_TRIGGER_ASK`
+from window open to enter; 0=off), `SCANNER_NO_TRADE_ET` (ET no-buy window "FROM-TO", e.g.
+`21-3`; wraps midnight; empty=always), `SCANNER_TRIGGER_ASK`
 (0.99), `SCANNER_STOP_ENABLED` (default false — held-position stop OFF; filters entry-only),
 `SCANNER_EXIT_PRICE` (0.10, stop floor, used only when stop enabled), `SCANNER_DISCOVERY_SECS`
 (reuses `NINETYNINE_ASSETS`/`_BUY_MAX_AGE_SECS`/`_RECONCILE_MS`/`_MAX_CONCURRENT_BUYS`);
