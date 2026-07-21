@@ -100,9 +100,17 @@ Two strategies, selected by env:
   (never over-sell), honouring `MAX_POSITIONS` (new-market cap) and a minimum
   target-trade value. **Order type is selectable (`COPY_ORDER_TYPE`, applies to EVERY order):**
   `gtc` (default) = GTC limit at the target's **exact** price (purest mirror, but rests
-  unfilled once the book moves); `fak` = marketable **fill-and-kill** priced `COPY_FAK_AHEAD`
-  *through* the quote so it crosses and fills **now**, killing the remainder (nothing rests) —
-  `fak` overrides weather chasing. Our position comes from **our own fills**
+  unfilled once the book moves); `fak` = **fill-and-kill at the LIVE QUOTE** (best ask/bid) —
+  crosses and fills **now**, remainder killed, nothing rests. No "ahead" buffer: a FAK that
+  crosses nothing because the quote moved is **re-quoted** by the retry loop against a fresh
+  book. `fak` overrides weather chasing. Every placement **retries transient failures**
+  (network/5xx/rate-limit/FAK no-fill) with backoff and gives up at once on **genuine** ones
+  (balance/allowance/closed/bad size); retries **never duplicate** (we check for a resting
+  order at our price, or a moved position, before re-placing). Each target trade runs on a
+  **detached, semaphore-bounded worker** (`COPY_MAX_CONCURRENT`) so a slow retry never blocks
+  another market. `COPY_MARKET_FROM_DATE` (e.g. `july-23`) only copies markets dated on/after
+  it — so you don't join a target's run mid-stream; the date comes from the up/down slug's
+  timestamp, else a `Month DD` in the title. Our position comes from **our own fills**
   (`/data/trades`, lag-free; `/positions` only as a fallback if that call errors), so the
   target's exit is never skipped just because the snapshot hasn't caught up. Optional weather
   price-chasing (gtc mode only), **auto-sell** resting limit and **stale-order
@@ -225,8 +233,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `DATA_SOURCE=rest|ws`, `COPY_POLL_MS`. brownfox: `USE_BROWNFOX_MODE`,
 `BROWNFOX_TRADE_SIZE_SHARES`, `BROWNFOX_SELL_MARKUP`, `BROWNFOX_RECONCILE_MS`,
 `BROWNFOX_MARKET_SELL_RETRIES`. Replicator: `COPY_PERCENTAGE`, `MAX_POSITIONS`,
-`MIN_TARGET_TRADE_VALUE_USD`, `COPY_ORDER_TYPE` (`gtc`|`fak`), `COPY_FAK_AHEAD`;
-weather `USE_WEATHER_MODE`, `WEATHER_*`; auto-sell
+`MIN_TARGET_TRADE_VALUE_USD`, `COPY_ORDER_TYPE` (`gtc`|`fak`), `COPY_PLACE_RETRIES`,
+`COPY_MAX_CONCURRENT`, `COPY_MARKET_FROM_DATE`; weather `USE_WEATHER_MODE`, `WEATHER_*`; auto-sell
 `AUTO_SELL_*`; stale `STALE_ORDER_*`. 99c: `USE_99C_MODE`,
 `NINETYNINE_TRADE_SIZE_SHARES`, `NINETYNINE_RECONCILE_MS`,
 `NINETYNINE_BUY_MAX_AGE_SECS`, `NINETYNINE_ASSETS` (only copy

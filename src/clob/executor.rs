@@ -368,15 +368,6 @@ impl Executor {
         Some(net.max(0.0))
     }
 
-    /// Marketable SELL price: `ahead` BELOW the best bid, floored at one tick. A sell limit
-    /// here crosses the bid side and fills NOW — the mirror of `marketable_buy_price`.
-    pub async fn marketable_sell_price(&self, token_id: &str, ahead: f64, tick: f64) -> f64 {
-        let tick = if tick > 0.0 { tick } else { 0.01 };
-        let (bid, _) = self.book(token_id).await;
-        let raw = if bid > 0.0 { bid - ahead } else { tick };
-        signing::snap_price(raw.max(tick), tick).max(tick)
-    }
-
     /// Matched (filled) share count for an order id. `GET /data/order/{id}`.
     pub async fn order_matched(&self, order_id: &str) -> Option<f64> {
         let path = format!("/data/order/{order_id}");

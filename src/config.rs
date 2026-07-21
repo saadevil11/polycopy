@@ -134,11 +134,16 @@ pub struct Config {
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
     // Replicator order type. false (COPY_ORDER_TYPE=gtc, default) = GTC limit at the target's
-    // exact price for EVERY order (rests if not marketable). true (=fak) = a marketable
-    // fill-and-kill for EVERY order: priced `copy_fak_ahead` THROUGH the quote so it crosses
-    // and fills now, killing the remainder (nothing ever rests). FAK overrides weather chasing.
+    // exact price for EVERY order (rests if not marketable). true (=fak) = fill-and-kill AT THE
+    // LIVE QUOTE for every order: crosses and fills now, remainder killed (nothing rests). No
+    // "ahead" buffer is needed — a FAK that crosses nothing because the book moved is simply
+    // re-quoted by the retry loop against a fresh book. FAK overrides weather chasing.
     pub copy_use_fak: bool,
-    pub copy_fak_ahead: f64, // how far through the quote to price a FAK (only when copy_use_fak)
+    pub copy_max_concurrent: usize, // replicator orders in flight at once (detached workers)
+    pub copy_place_retries: u32,    // retries for a TRANSIENT placement failure / FAK no-fill
+    // Only copy markets dated on/after this (`COPY_MARKET_FROM_DATE`, e.g. "july-23" or
+    // "2026-07-23"). None = copy everything. Stops us joining a target's run mid-stream.
+    pub copy_market_from_date: Option<chrono::NaiveDate>,
     pub max_positions: usize,            // distinct markets cap (0 = unlimited)
     pub min_target_trade_value_usd: f64, // skip target trades smaller than this
 
@@ -314,7 +319,9 @@ impl Config {
             sell_with_target_buy_ahead: env_f64("SELL_WITH_TARGET_BUY_AHEAD", 0.03),
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
             copy_use_fak: env_str("COPY_ORDER_TYPE", "gtc").trim().eq_ignore_ascii_case("fak"),
-            copy_fak_ahead: env_f64("COPY_FAK_AHEAD", 0.03).max(0.0),
+            copy_max_concurrent: (env_u64("COPY_MAX_CONCURRENT", 8) as usize).max(1),
+            copy_place_retries: env_u64("COPY_PLACE_RETRIES", 5).max(1) as u32,
+            copy_market_from_date: parse_from_date(&env_str("COPY_MARKET_FROM_DATE", "")),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),
             weather_enabled: env_bool("USE_WEATHER_MODE", false),
@@ -340,5 +347,65 @@ impl Config {
             exchange_v2: "0xE111180000d2663C0091e4f400237545B87B996B".into(),
             neg_risk_exchange_v2: "0xe2222d279d744050d28e00520010520000310F59".into(),
         })
+    }
+}
+
+/// Parse `COPY_MARKET_FROM_DATE` — "july-23", "jul 23", "7-23" or "2026-07-23".
+/// A bare month/day assumes the current year. Empty/unparseable => None (no filter).
+fn parse_from_date(raw: &str) -> Option<chrono::NaiveDate> {
+    let s = raw.trim().to_lowercase().replace(['_', ' ', '/'], "-");
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+        return Some(d);
+    }
+    let parts: Vec<&str> = s.split('-').filter(|p| !p.is_empty()).collect();
+    if parts.len() == 2 {
+        let month = month_num(parts[0])?;
+        let day: u32 = parts[1].parse().ok()?;
+        let year = chrono::Datelike::year(&chrono::Utc::now());
+        return chrono::NaiveDate::from_ymd_opt(year, month, day);
+    }
+    None
+}
+
+/// "july"/"jul"/"7" -> 7. None if it isn't a month.
+fn month_num(s: &str) -> Option<u32> {
+    if let Ok(n) = s.parse::<u32>() {
+        return if (1..=12).contains(&n) { Some(n) } else { None };
+    }
+    let m = match s.get(..3)? {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        _ => return None,
+    };
+    Some(m)
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+
+    #[test]
+    fn parses_market_from_date_forms() {
+        let y = chrono::Datelike::year(&chrono::Utc::now());
+        assert_eq!(parse_from_date("july-23"), chrono::NaiveDate::from_ymd_opt(y, 7, 23));
+        assert_eq!(parse_from_date("Jul 23"), chrono::NaiveDate::from_ymd_opt(y, 7, 23));
+        assert_eq!(parse_from_date("7-23"), chrono::NaiveDate::from_ymd_opt(y, 7, 23));
+        assert_eq!(parse_from_date("2026-07-23"), chrono::NaiveDate::from_ymd_opt(2026, 7, 23));
+        assert_eq!(parse_from_date(""), None);
+        assert_eq!(parse_from_date("   "), None);
+        assert_eq!(parse_from_date("notadate"), None);
     }
 }
