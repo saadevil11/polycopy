@@ -133,6 +133,12 @@ pub struct Config {
 
     // general copy replicator (proportional buy/sell copying)
     pub copy_percentage: f64,            // fraction of the target's size to copy
+    // Replicator order type. false (COPY_ORDER_TYPE=gtc, default) = GTC limit at the target's
+    // exact price for EVERY order (rests if not marketable). true (=fak) = a marketable
+    // fill-and-kill for EVERY order: priced `copy_fak_ahead` THROUGH the quote so it crosses
+    // and fills now, killing the remainder (nothing ever rests). FAK overrides weather chasing.
+    pub copy_use_fak: bool,
+    pub copy_fak_ahead: f64, // how far through the quote to price a FAK (only when copy_use_fak)
     pub max_positions: usize,            // distinct markets cap (0 = unlimited)
     pub min_target_trade_value_usd: f64, // skip target trades smaller than this
 
@@ -307,6 +313,8 @@ impl Config {
             sell_with_target_exit_price: env_f64("SELL_WITH_TARGET_EXIT_PRICE", 0.10),
             sell_with_target_buy_ahead: env_f64("SELL_WITH_TARGET_BUY_AHEAD", 0.03),
             copy_percentage: env_f64("COPY_PERCENTAGE", 0.1),
+            copy_use_fak: env_str("COPY_ORDER_TYPE", "gtc").trim().eq_ignore_ascii_case("fak"),
+            copy_fak_ahead: env_f64("COPY_FAK_AHEAD", 0.03).max(0.0),
             max_positions: env_u64("MAX_POSITIONS", 0) as usize,
             min_target_trade_value_usd: env_f64("MIN_TARGET_TRADE_VALUE_USD", 4.0),
             weather_enabled: env_bool("USE_WEATHER_MODE", false),

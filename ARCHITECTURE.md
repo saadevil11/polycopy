@@ -96,10 +96,16 @@ Two strategies, selected by env:
   (EXITING resumes via the floor dump; DONE/ABORTED/STUCK terminal). A dropped WS sell
   is caught by the `/activity` safety-net poll (§2). State in `sellwithtarget.json`.
 - **general copy replicator** (`USE_BROWNFOX_MODE=false`) — copy the target's
-  buys/sells **proportionally** (`COPY_PERCENTAGE`): buys via optional weather
-  price-chasing (or a GTC at their price), sells **capped at our holdings**
+  buys/sells **proportionally** (`COPY_PERCENTAGE`), sells **capped at our position**
   (never over-sell), honouring `MAX_POSITIONS` (new-market cap) and a minimum
-  target-trade value. Optional **auto-sell** resting limit and **stale-order
+  target-trade value. **Order type is selectable (`COPY_ORDER_TYPE`, applies to EVERY order):**
+  `gtc` (default) = GTC limit at the target's **exact** price (purest mirror, but rests
+  unfilled once the book moves); `fak` = marketable **fill-and-kill** priced `COPY_FAK_AHEAD`
+  *through* the quote so it crosses and fills **now**, killing the remainder (nothing rests) —
+  `fak` overrides weather chasing. Our position comes from **our own fills**
+  (`/data/trades`, lag-free; `/positions` only as a fallback if that call errors), so the
+  target's exit is never skipped just because the snapshot hasn't caught up. Optional weather
+  price-chasing (gtc mode only), **auto-sell** resting limit and **stale-order
   sweep** loops run alongside it.
 
 ## 2. How it runs
@@ -219,7 +225,8 @@ Wallet/auth: `PRIVATE_KEY`, `FUNDER_ADDRESS`, `SIGNATURE_TYPE=2`. Safety:
 `DATA_SOURCE=rest|ws`, `COPY_POLL_MS`. brownfox: `USE_BROWNFOX_MODE`,
 `BROWNFOX_TRADE_SIZE_SHARES`, `BROWNFOX_SELL_MARKUP`, `BROWNFOX_RECONCILE_MS`,
 `BROWNFOX_MARKET_SELL_RETRIES`. Replicator: `COPY_PERCENTAGE`, `MAX_POSITIONS`,
-`MIN_TARGET_TRADE_VALUE_USD`; weather `USE_WEATHER_MODE`, `WEATHER_*`; auto-sell
+`MIN_TARGET_TRADE_VALUE_USD`, `COPY_ORDER_TYPE` (`gtc`|`fak`), `COPY_FAK_AHEAD`;
+weather `USE_WEATHER_MODE`, `WEATHER_*`; auto-sell
 `AUTO_SELL_*`; stale `STALE_ORDER_*`. 99c: `USE_99C_MODE`,
 `NINETYNINE_TRADE_SIZE_SHARES`, `NINETYNINE_RECONCILE_MS`,
 `NINETYNINE_BUY_MAX_AGE_SECS`, `NINETYNINE_ASSETS` (only copy
@@ -299,6 +306,8 @@ see [`deploy/AWS_DEPLOY.md`](deploy/AWS_DEPLOY.md) and
    poll); track **our** position from the buy/sell **orders' matched fills**
    (`order_matched` / `open_orders` — CLOB order data, lag-free). `/positions`
    (`token_holdings*`) is allowed only for the dashboard/PnL and one-time startup
-   recovery, never in the live detect/execute path. (active in `sellwithtarget` +
-   `ninetynine`; `brownfox`/`replicator`/`autosell` still read `/positions` and
-   should be converted before they're used live.)
+   recovery, never in the live detect/execute path. (active in `sellwithtarget`,
+   `ninetynine` + `replicator` — the latter reads `Executor::filled_position`
+   (`/data/trades`) and only falls back to `/positions` if that call errors;
+   `brownfox`/`autosell` still read `/positions` and should be converted before
+   they're used live.)

@@ -337,6 +337,46 @@ impl Executor {
         }
     }
 
+    /// Our NET filled position for a token, from OUR OWN fills (`GET /data/trades` — the
+    /// lag-free trade feed, NOT the `/positions` snapshot which lags minutes; hard rule #8):
+    /// `sum(BUY size) - sum(SELL size)`, clamped at 0.
+    /// `None` = the call FAILED. Never read that as "we hold nothing" — the caller must
+    /// decide (e.g. fall back to /positions) so an API blip can't silently skip an exit.
+    pub async fn filled_position(&self, token_id: &str) -> Option<f64> {
+        let ts = auth::now_secs();
+        let headers = auth::l2_headers(&self.creds, self.poly_address(), ts, "GET", "/data/trades", None).ok()?;
+        let mut rb = self
+            .client
+            .get(format!("{}/data/trades?asset_id={}&next_cursor=MA==", self.clob_url, token_id));
+        for (k, v) in headers {
+            rb = rb.header(k, v);
+        }
+        let v: Value = rb.send().await.ok()?.json().await.ok()?;
+        let data = v.get("data").and_then(|d| d.as_array())?;
+        let mut net = 0.0_f64;
+        for tr in data {
+            let size = num(tr, "size");
+            if size <= 0.0 {
+                continue;
+            }
+            match tr.get("side").and_then(|x| x.as_str()).map(|s| s.to_uppercase()).as_deref() {
+                Some("BUY") => net += size,
+                Some("SELL") => net -= size,
+                _ => {}
+            }
+        }
+        Some(net.max(0.0))
+    }
+
+    /// Marketable SELL price: `ahead` BELOW the best bid, floored at one tick. A sell limit
+    /// here crosses the bid side and fills NOW — the mirror of `marketable_buy_price`.
+    pub async fn marketable_sell_price(&self, token_id: &str, ahead: f64, tick: f64) -> f64 {
+        let tick = if tick > 0.0 { tick } else { 0.01 };
+        let (bid, _) = self.book(token_id).await;
+        let raw = if bid > 0.0 { bid - ahead } else { tick };
+        signing::snap_price(raw.max(tick), tick).max(tick)
+    }
+
     /// Matched (filled) share count for an order id. `GET /data/order/{id}`.
     pub async fn order_matched(&self, order_id: &str) -> Option<f64> {
         let path = format!("/data/order/{order_id}");
