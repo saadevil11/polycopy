@@ -135,6 +135,40 @@ pub fn sell_amounts(price: f64, size: f64, tick: f64) -> (u128, u128) {
     (to_token_decimals(raw_maker), to_token_decimals(raw_taker))
 }
 
+// ── MARKET (FAK/FOK) amounts ─────────────────────────────────────────────────
+// Market orders are validated with TIGHTER accuracy than limit orders: the CLOB
+// rejects them with "invalid amounts, the market buy orders maker amount supports
+// a max accuracy of 2 decimals, taker amount a max of 4 decimals". The pUSD leg
+// gets 2 dp, the share leg 4 dp — so the limit `buy_amounts`/`sell_amounts`
+// (which allow the pUSD leg up to `ad` = 4-6 dp) must NOT be used for FAK/FOK.
+// e.g. BUY 28.17 sh @ 0.73 -> maker 20.5641 (4 dp) => 400 Bad Request.
+const MARKET_CASH_DP: i32 = 2; // pUSD leg
+const MARKET_SIZE_DP: i32 = 4; // share leg
+
+/// Market-BUY (maker = pUSD spent @2dp, taker = shares @4dp), both 6dp ints.
+/// Cash is floored to 2 dp; shares are then derived from it and floored to 4 dp, which
+/// leaves the implied price (maker/taker) a hair ABOVE `price`. That is intentional and
+/// required: a marketable order must still CROSS. It's safe because the pUSD leg is
+/// hard-capped at floor(size*price, 2) — we can never spend more than intended — and a
+/// crossing buy fills at the resting ask anyway (price improvement).
+pub fn market_buy_amounts(price: f64, size: f64) -> (u128, u128) {
+    if price <= 0.0 {
+        return (0, 0);
+    }
+    let cash = round_down(size * price, MARKET_CASH_DP);
+    let shares = round_down(cash / price, MARKET_SIZE_DP);
+    (to_token_decimals(cash), to_token_decimals(shares))
+}
+
+/// Market-SELL (maker = shares @4dp, taker = pUSD proceeds @2dp), both 6dp ints.
+/// Proceeds are floored to 2 dp, so we only ever accept marginally less — safe
+/// for a marketable sell that is crossing the bid anyway.
+pub fn market_sell_amounts(price: f64, size: f64) -> (u128, u128) {
+    let shares = round_down(size, MARKET_SIZE_DP);
+    let proceeds = round_down(shares * price, MARKET_CASH_DP);
+    (to_token_decimals(shares), to_token_decimals(proceeds))
+}
+
 // ── EIP-712 hashing ──────────────────────────────────────────────────────────
 fn ks(s: &str) -> [u8; 32] {
     keccak256(s.as_bytes())
@@ -399,6 +433,38 @@ mod tests {
         assert_eq!(sell_amounts(0.33, 100.0, 0.01), (100_000_000, 33_000_000));
         assert_eq!(sell_amounts(0.985, 211.3, 0.001), (211_300_000, 208_130_500));
         assert_eq!(sell_amounts(0.999, 5.0, 0.001), (5_000_000, 4_995_000));
+    }
+
+    #[test]
+    fn market_amounts_respect_clob_accuracy_limits() {
+        // The CLOB rejects market orders whose pUSD leg has >2 dp or share leg >4 dp.
+        // Live rejection: BUY 28.17 sh @ 0.73 -> limit rounding gave maker 20.5641 (4 dp).
+        assert_eq!(buy_amounts(0.73, 28.17, 0.01).0, 20_564_100); // 20.5641 -> 4 dp, REJECTED
+        let (maker, taker) = market_buy_amounts(0.73, 28.17);
+        assert_eq!(maker, 20_560_000); // 20.56  -> 2 dp OK
+        assert_eq!(taker, 28_164_300); // 28.1643 -> 4 dp OK
+        // A MARKETABLE buy must still CROSS, so the implied price (maker/taker) is allowed to
+        // sit a hair ABOVE the nominal limit — flooring the share leg to 4 dp pushes it up, and
+        // that is what keeps it crossing. It is safe because the pUSD leg is hard-capped at
+        // floor(size*price, 2): we can never spend more than intended, and we fill at the
+        // resting ask anyway (price improvement).
+        let implied = maker as f64 / taker as f64;
+        assert!(implied >= 0.73 - 1e-9, "implied {implied} below the limit -> would not cross");
+        assert!(implied <= 0.73 * 1.001, "implied {implied} materially above the limit");
+        assert!(maker as f64 / 1e6 <= 28.17 * 0.73 + 1e-9, "pUSD leg must never exceed size*price");
+
+        // the other failing size from the same log: 49.14 sh @ 0.47
+        let (maker, taker) = market_buy_amounts(0.47, 49.14);
+        assert_eq!(maker % 10_000, 0, "pUSD leg must be <=2 dp");
+        assert_eq!(taker % 100, 0, "share leg must be <=4 dp");
+        let implied = maker as f64 / taker as f64;
+        assert!(implied >= 0.47 - 1e-9 && implied <= 0.47 * 1.001, "implied {implied} off-limit");
+        assert!(maker as f64 / 1e6 <= 49.14 * 0.47 + 1e-9, "pUSD leg must never exceed size*price");
+
+        // market SELL: shares <=4 dp, proceeds <=2 dp
+        let (maker, taker) = market_sell_amounts(0.4310, 463.66);
+        assert_eq!(maker % 100, 0, "share leg must be <=4 dp");
+        assert_eq!(taker % 10_000, 0, "pUSD leg must be <=2 dp");
     }
 
     #[test]

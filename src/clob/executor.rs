@@ -184,10 +184,16 @@ impl Executor {
             debug!("DRY: would place {side_str} {size} @ {snapped} on {}", &token_id[..token_id.len().min(10)]);
             return Ok(format!("dryrun-{}", auth::now_millis()));
         }
-        let (maker_amount, taker_amount) = if side == signing::SIDE_BUY {
-            signing::buy_amounts(snapped, size, tick)
-        } else {
-            signing::sell_amounts(snapped, size, tick)
+        // FAK/FOK are MARKET orders — the CLOB validates them with tighter accuracy
+        // than limit orders (pUSD leg 2 dp, share leg 4 dp) and 400s otherwise with
+        // "invalid amounts, the market buy orders maker amount supports a max
+        // accuracy of 2 decimals, taker amount a max of 4 decimals".
+        let is_market = order_type == "FAK" || order_type == "FOK";
+        let (maker_amount, taker_amount) = match (side == signing::SIDE_BUY, is_market) {
+            (true, true) => signing::market_buy_amounts(snapped, size),
+            (true, false) => signing::buy_amounts(snapped, size, tick),
+            (false, true) => signing::market_sell_amounts(snapped, size),
+            (false, false) => signing::sell_amounts(snapped, size, tick),
         };
         if maker_amount == 0 || taker_amount == 0 {
             anyhow::bail!("computed zero amount (price={snapped}, size={size}, tick={tick})");
