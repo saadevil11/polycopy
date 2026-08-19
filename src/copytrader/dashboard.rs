@@ -56,6 +56,7 @@ struct Snap {
     dry_run: bool,
     uptime_secs: i64,
     portfolio_value: f64,
+    cost_basis: f64,
     open_pnl: f64,
     position_count: usize,
     copied_markets: usize,
@@ -66,6 +67,7 @@ struct Snap {
 async fn api_state(State(ctx): State<Ctx>) -> Json<Snap> {
     let positions = ctx.exec.positions().await;
     let portfolio_value: f64 = positions.iter().map(|p| p.value).sum();
+    let cost_basis: f64 = positions.iter().map(|p| p.cost).sum();
     let open_pnl: f64 = positions.iter().map(|p| p.pnl).sum();
     let mode = if ctx.cfg.ninetynine_enabled {
         "99c"
@@ -87,6 +89,7 @@ async fn api_state(State(ctx): State<Ctx>) -> Json<Snap> {
         position_count: positions.len(),
         copied_markets: ctx.store.copied_count(),
         portfolio_value,
+        cost_basis,
         open_pnl,
         positions,
         trades: ctx.store.recent_trades(),
@@ -364,7 +367,7 @@ async function tick(){
  $('#src').textContent=(s.data_source||'—').toUpperCase();
  const d=$('#dry');d.textContent=s.dry_run?'DRY-RUN':'LIVE';d.className=s.dry_run?'warn':'on';
  $('#up').textContent=hms(s.uptime_secs);
- const pnl=num(s.open_pnl),inv=num(s.portfolio_value)-pnl;
+ const pnl=num(s.open_pnl),inv=num(s.cost_basis);
  $('#kpis').innerHTML=[
   ['Portfolio Value',money(s.portfolio_value),'',inv>0?'cost basis '+money(inv):'','acc'],
   ['Unrealised P&amp;L',sign(pnl),cls(pnl),inv>0?(pnl/inv*100).toFixed(2)+'% return':'',''],

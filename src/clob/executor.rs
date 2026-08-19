@@ -24,6 +24,10 @@ pub struct PositionInfo {
     pub avg_price: f64,
     pub cur_price: f64,
     pub value: f64,
+    /// What the held shares cost: size * avgPrice. Kept explicit rather than
+    /// derived as (value - pnl), which is only equal while `cashPnl` is purely
+    /// unrealised — it would silently skew after a partial sell.
+    pub cost: f64,
     pub pnl: f64,
 }
 
@@ -489,14 +493,16 @@ impl Executor {
             .map(|p| {
                 let size = num(p, "size");
                 let cur = num(p, "curPrice");
+                let avg = num(p, "avgPrice");
                 PositionInfo {
                     token_id: p.get("asset").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     title: p.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     outcome: p.get("outcome").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                     size,
-                    avg_price: num(p, "avgPrice"),
+                    avg_price: avg,
                     cur_price: cur,
                     value: size * cur,
+                    cost: size * avg,
                     pnl: num(p, "cashPnl"),
                 }
             })
