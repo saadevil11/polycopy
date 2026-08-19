@@ -315,7 +315,7 @@ padding-top:6px;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
   </div>
 </header>
 
-<div class="tgt">Copying <span id="target">&mdash;</span></div>
+<div class="tgt" id="tgtline">Copying <span id="target">&mdash;</span></div>
 
 <section class="kpis" id="kpis"></section>
 
@@ -330,7 +330,7 @@ padding-top:6px;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
 </section>
 
 <section class="panel">
-  <div class="ph"><h2>Copied Trades</h2><span class="c" id="tc"></span></div>
+  <div class="ph"><h2 id="trh">Copied Trades</h2><span class="c" id="tc"></span></div>
   <div id="tr"><div class="empty">Loading&hellip;</div></div>
 </section>
 
@@ -356,7 +356,10 @@ async function tick(){
  let s;try{s=await (await fetch('/api/state',{cache:'no-store'})).json();}
  catch(e){$('#led').className='led idle';return;}
  $('#led').className='led';
- $('#target').textContent=s.target||'—';
+ const selfd=/scanner/i.test(s.mode||'')||!s.target;
+ $('#tgtline').innerHTML=selfd?'Self-driven &middot; <span>no target trader</span>'
+   :'Copying <span>'+esc(s.target)+'</span>';
+ $('#trh').textContent=selfd?'Executed Trades':'Copied Trades';
  $('#mode').textContent=s.mode||'—';
  $('#src').textContent=(s.data_source||'—').toUpperCase();
  const d=$('#dry');d.textContent=s.dry_run?'DRY-RUN':'LIVE';d.className=s.dry_run?'warn':'on';
@@ -366,7 +369,7 @@ async function tick(){
   ['Portfolio Value',money(s.portfolio_value),'',inv>0?'cost basis '+money(inv):'','acc'],
   ['Unrealised P&amp;L',sign(pnl),cls(pnl),inv>0?(pnl/inv*100).toFixed(2)+'% return':'',''],
   ['Open Positions',s.position_count,'','across live markets',''],
-  ['Markets Copied',s.copied_markets,'','since start','']
+  [selfd?'Markets Traded':'Markets Copied',s.copied_markets,'','since start','']
  ].map(k=>`<div class="kpi ${k[4]}"><div class="l">${k[0]}</div><div class="v ${k[2]}">${k[1]}</div><div class="sub">${k[3]}</div></div>`).join('');
 
  $('#pc').textContent=s.positions.length?s.positions.length+' open':'';
@@ -391,7 +394,7 @@ async function tick(){
   <td class="r num">${num(t.size).toFixed(2)}</td>
   <td class="r num mut">${num(t.price).toFixed(3)}</td>
   <td class="st">${esc(t.status)}</td></tr>`).join('')+
-  '</tbody></table>':'<div class="empty">No copied trades yet.</div>';
+  '</tbody></table>':'<div class="empty">No trades yet.</div>';
  $('#clock').textContent=new Date().toLocaleTimeString(undefined,{hour12:false})+' local';
 }
 function ostat(s){return s?`<span class="ostat s-${esc(s)}">${esc(s)}</span>`:'';}
