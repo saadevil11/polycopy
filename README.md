@@ -36,9 +36,12 @@ What makes it different under the hood:
 
 ## ✨ Strategies
 
-Pick one via environment variables. All of them are restart-safe and honour `DRY_RUN`.
+**The copy replicator is the default and the mode this project is built around.**
+It runs out of the box — no flag required. The other strategies are advanced /
+experimental extras: they're off by default, each one *replaces* the replicator when
+enabled, and they're included because they're useful to study and to run deliberately.
 
-### 1. Proportional replicator — the general-purpose copytrader
+### The default — proportional copy replicator
 Mirrors the target's buys and sells at a configurable fraction of their size
 (`COPY_PERCENTAGE`). Sells are always capped at your actual holdings, so it can
 never over-sell. Supports a per-market cap, a minimum trade size, and a
@@ -49,20 +52,27 @@ Order type is selectable:
 - `gtc` — a limit order at the target's exact price (purest mirror; rests if the book has moved).
 - `fak` — fill-and-kill at the live quote: crosses and fills *now*, remainder cancelled.
 
-### 2. Fixed-size entry with managed exit
+---
+
+### Advanced / experimental modes *(off by default)*
+
+Enable at most one, and only on purpose. If several are set, precedence is
+`99c-scanner > 99c > sell-with-target > brownfox > replicator`.
+
+#### Fixed-size entry with managed exit
 One fixed-share buy per market at the target's price, a resting sell at
 `buy + markup`, and a forced exit if the target sells below it.
 
-### 3. Buy-and-hold
+#### Buy-and-hold
 One fixed-share buy per market, held to resolution — target sells are ignored.
 Built for traders who buy heavy favourites near $0.99 and hold.
 
-### 4. Exit-with-target
+#### Exit-with-target
 Fill-and-kill market entry; when the target first sells, the exit adapts to your
 real average cost (read from your own fills): chase the bid when you are in profit,
 cross the book when you are not.
 
-### 5. Self-driven order-book scanner — no target trader
+#### Self-driven order-book scanner — no target trader
 Instead of copying anyone, it watches the order books of short-duration up/down
 markets over the CLOB market WebSocket and acts when the best ask hits a
 configured trigger. Includes optional technical entry filters computed live from
@@ -90,8 +100,8 @@ Each filter is directional: a resistance level blocks *Up* entries and support b
 ### 1. Build
 
 ```bash
-git clone https://github.com/shadow-112/polybotshadow.git
-cd polybotshadow
+git clone https://github.com/saadevil11/polycopy.git
+cd polycopy
 cargo build --release
 ```
 
@@ -110,6 +120,10 @@ SIGNATURE_TYPE=2                 # 2 = Safe proxy | 3 = new deposit wallet
 TARGET_TRADER_ADDRESS=0x...      # the trader you want to copy
 DRY_RUN=true                     # start here: logs orders, places nothing
 ```
+
+Leave every `USE_*_MODE` flag at `false` (the shipped default) and the bot runs the
+copy replicator.
+
 
 ### 3. Dry run — do this first
 
