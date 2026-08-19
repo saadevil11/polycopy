@@ -189,76 +189,232 @@ async fn api_scanner(State(ctx): State<Ctx>) -> Json<ScanSnap> {
     Json(ScanSnap { enabled: true, trigger, cards })
 }
 
-const INDEX_HTML: &str = r#"<!DOCTYPE html><html><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/><title>Copytrader</title>
+const INDEX_HTML: &str = r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/><title>polybotshadow — copytrader</title>
 <style>
-:root{--bg:#0b0f1a;--card:#141b2e;--line:#232c44;--txt:#e7ecf5;--mut:#8a96b3;--grn:#27d3a2;--red:#ff5d73;--acc:#6d8bff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px -apple-system,Segoe UI,Roboto,Arial}
-.wrap{max-width:1200px;margin:0 auto;padding:20px}
-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px}
-.brand{display:flex;align-items:center;gap:11px}.logo{width:36px;height:36px;border-radius:11px;background:linear-gradient(135deg,#6d8bff,#9b7bff);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff}
-.pills{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}.pill{background:var(--card);border:1px solid var(--line);padding:6px 11px;border-radius:999px;color:var(--mut)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--grn);display:inline-block;margin-right:6px}
-.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}@media(max-width:700px){.grid{grid-template-columns:repeat(2,1fr)}}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
-.kpi .l{font-size:11px;color:var(--mut);text-transform:uppercase}.kpi .v{font-size:23px;font-weight:700;margin-top:5px}
+:root{
+--bg:#08090c;--panel:#0e1014;--panel2:#0b0d11;--head:#101318;
+--line:#1a1d24;--line2:#232830;--txt:#e8eaee;--mut:#79828f;--dim:#4d5563;
+--grn:#00c76e;--grn-d:#0a1f18;--red:#ff4757;--red-d:#221014;--amb:#e3a13c;--acc:#3d8bfd;
+--mono:ui-monospace,"SF Mono","Cascadia Mono","Segoe UI Mono",Menlo,Consolas,monospace;
+--ui:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font:13px/1.45 var(--ui);
+-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.app{max-width:1320px;margin:0 auto;padding:0 22px 40px}
+
+/* ── top bar ─────────────────────────────────────────────── */
+.top{display:flex;align-items:center;justify-content:space-between;gap:20px;
+padding:16px 0 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.id{display:flex;align-items:baseline;gap:11px}
+.mark{font-family:var(--mono);font-size:15px;font-weight:600;letter-spacing:-.02em;color:var(--txt)}
+.mark b{color:var(--grn);font-weight:600}
+.ver{font-size:10.5px;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.stat{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+.s{display:flex;align-items:center;gap:7px;font-size:10.5px;letter-spacing:.07em;
+text-transform:uppercase;color:var(--dim)}
+.s b{font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:0;
+text-transform:none;color:var(--mut)}
+.s b.on{color:var(--grn)}.s b.warn{color:var(--amb)}
+.led{width:6px;height:6px;border-radius:50%;background:var(--grn);
+box-shadow:0 0 0 3px rgba(0,199,110,.13)}
+.led.idle{background:var(--dim);box-shadow:none}
+
+/* ── target strip ────────────────────────────────────────── */
+.tgt{display:flex;align-items:center;gap:10px;padding:11px 0 16px;
+font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim)}
+.tgt span{font-family:var(--mono);font-size:12px;letter-spacing:0;
+text-transform:none;color:var(--mut)}
+
+/* ── kpi strip ───────────────────────────────────────────── */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+border:1px solid var(--line);border-radius:3px;overflow:hidden;margin-bottom:22px}
+.kpi{background:var(--panel);padding:15px 17px 16px;position:relative}
+.kpi .l{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim)}
+.kpi .v{font-family:var(--mono);font-variant-numeric:tabular-nums;
+font-size:25px;font-weight:600;letter-spacing:-.03em;margin-top:9px;line-height:1}
+.kpi .sub{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:7px}
+.kpi.acc{box-shadow:inset 2px 0 0 var(--grn)}
 .pos{color:var(--grn)}.neg{color:var(--red)}
-.sec{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:16px;overflow:hidden}
-.sec h2{font-size:14px;margin:0;padding:13px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.sec h2 .c{color:var(--mut);font-weight:500;font-size:12px}
-table{width:100%;border-collapse:collapse;font-size:13px}th{font-size:11px;text-transform:uppercase;color:#5d6885;text-align:left;padding:9px 16px;border-bottom:1px solid var(--line)}
-td{padding:11px 16px;border-bottom:1px solid var(--line)}tr:last-child td{border-bottom:none}.right{text-align:right}.mut{color:var(--mut)}
-.badge{padding:3px 8px;border-radius:7px;font-size:11px;font-weight:700}.buy{background:#27d3a21f;color:var(--grn)}.sell{background:#ff5d731f;color:var(--red)}
-.empty{padding:30px;text-align:center;color:var(--mut)}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(225px,1fr));gap:12px;padding:14px 16px}
-.card{background:#0e1424;border:1px solid var(--line);border-radius:12px;padding:12px}
-.card.hot{border-color:var(--grn);box-shadow:0 0 0 1px var(--grn) inset}
-.card.bad{opacity:.5}
-.card .ch{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.card .coin{font-weight:800;font-size:15px}.card .win{font-size:11px;color:var(--mut)}
-.row{display:flex;align-items:center;padding:4px 0;font-size:13px}
-.side{color:var(--mut);font-size:11px;width:42px}
-.bar{flex:1;height:5px;background:#1b2236;border-radius:3px;margin:0 8px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
-.ask{font-variant-numeric:tabular-nums;font-weight:700;width:48px;text-align:right}.ask.t{color:var(--grn)}
-.ostat{font-size:10px;padding:2px 6px;border-radius:6px;font-weight:700;margin-left:7px}
-.s-resting{background:#6d8bff22;color:var(--acc)}.s-holding{background:#27d3a222;color:var(--grn)}.s-exited,.s-cancelled{background:#ff5d7322;color:var(--red)}
-.s-placing{background:#8a96b322;color:var(--mut)}.s-dry-run{background:#ffb02e22;color:#ffb02e}
-</style></head><body><div class="wrap">
-<header><div class="brand"><div class="logo">P</div><div><div style="font-weight:600;font-size:17px">Copytrader (Rust)</div><div class="mut" style="font-size:11.5px" id="target">—</div></div></div>
-<div class="pills"><span class="pill"><span class="dot"></span><span id="mode">—</span></span><span class="pill" id="src">—</span><span class="pill" id="dry">—</span><span class="pill" id="up">—</span></div></header>
-<div class="grid" id="kpis"></div>
-<div class="sec" id="scanSec" style="display:none"><h2>5-min Markets (live book) <span class="c" id="scanc"></span></h2><div id="cards" class="cards"><div class="empty">loading…</div></div></div>
-<div class="sec"><h2>Open Positions <span class="c" id="pc"></span></h2><div id="pos"><div class="empty">loading…</div></div></div>
-<div class="sec"><h2>Recent Copy Trades <span class="c" id="tc"></span></h2><div id="tr"><div class="empty">loading…</div></div></div>
+
+/* ── panels ──────────────────────────────────────────────── */
+.panel{border:1px solid var(--line);border-radius:3px;background:var(--panel);
+margin-bottom:18px;overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;
+padding:11px 16px;background:var(--head);border-bottom:1px solid var(--line)}
+.ph h2{margin:0;font-size:11px;font-weight:600;letter-spacing:.09em;
+text-transform:uppercase;color:var(--mut)}
+.ph .c{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+
+/* ── tables ──────────────────────────────────────────────── */
+table{width:100%;border-collapse:collapse}
+th{font-size:9.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+color:var(--dim);text-align:left;padding:9px 16px;background:var(--panel2);
+border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:rgba(255,255,255,.016)}
+.r{text-align:right}.mut{color:var(--mut)}
+.mkt{max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oc{font-family:var(--mono);font-size:11px;color:var(--mut);
+border:1px solid var(--line2);border-radius:2px;padding:1px 6px}
+
+/* ── badges ──────────────────────────────────────────────── */
+.badge{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.04em;
+padding:2px 7px;border-radius:2px;display:inline-block}
+.buy{background:var(--grn-d);color:var(--grn);box-shadow:inset 0 0 0 1px rgba(0,199,110,.22)}
+.sell{background:var(--red-d);color:var(--red);box-shadow:inset 0 0 0 1px rgba(255,71,87,.22)}
+.st{font-family:var(--mono);font-size:10px;color:var(--mut)}
+.st i{font-style:normal;color:var(--grn)}
+
+.empty{padding:34px 16px;text-align:center;color:var(--dim);font-size:12px}
+
+/* ── scanner cards ───────────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(204px,1fr));
+gap:9px;padding:13px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:3px;padding:12px 13px 11px}
+.card.hot{background:linear-gradient(180deg,rgba(0,199,110,.06),var(--panel2) 65%);
+border-color:rgba(0,199,110,.42)}
+.card.bad{opacity:.38}
+.ch{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:11px}
+.coin{font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.02em}
+.win{font-family:var(--mono);font-size:10px;color:var(--dim)}
+.row{display:flex;align-items:center;gap:8px;padding:3px 0}
+.side{font-size:9.5px;letter-spacing:.09em;color:var(--dim);width:34px}
+.bar{flex:1;height:3px;background:var(--line2);border-radius:1px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--dim);transition:width .3s ease}
+.bar i.t{background:var(--grn)}
+.ask{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;
+font-weight:600;width:42px;text-align:right;color:var(--mut)}
+.ask.t{color:var(--grn)}
+.ostat{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.03em;
+padding:1px 5px;border-radius:2px;text-transform:uppercase}
+.s-resting{background:rgba(61,139,253,.13);color:var(--acc)}
+.s-holding{background:var(--grn-d);color:var(--grn)}
+.s-exited,.s-cancelled{background:var(--red-d);color:var(--red)}
+.s-placing{background:rgba(121,130,143,.13);color:var(--mut)}
+.s-dry-run{background:rgba(227,161,60,.13);color:var(--amb)}
+
+.foot{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;
+padding-top:6px;font-family:var(--mono);font-size:10.5px;color:var(--dim)}
+@media(max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}.app{padding:0 14px 30px}}
+</style></head><body><div class="app">
+
+<header class="top">
+  <div class="id">
+    <span class="mark">poly<b>bot</b>shadow</span>
+    <span class="ver">Polymarket Copytrader &middot; Rust &middot; CLOB v2</span>
+  </div>
+  <div class="stat">
+    <span class="s"><i class="led" id="led"></i><b id="dry" class="on">&mdash;</b></span>
+    <span class="s">Mode <b id="mode">&mdash;</b></span>
+    <span class="s">Feed <b id="src">&mdash;</b></span>
+    <span class="s">Uptime <b id="up">&mdash;</b></span>
+  </div>
+</header>
+
+<div class="tgt">Copying <span id="target">&mdash;</span></div>
+
+<section class="kpis" id="kpis"></section>
+
+<section class="panel" id="scanSec" style="display:none">
+  <div class="ph"><h2>Live Order Books</h2><span class="c" id="scanc"></span></div>
+  <div id="cards" class="cards"><div class="empty">Waiting for markets&hellip;</div></div>
+</section>
+
+<section class="panel">
+  <div class="ph"><h2>Open Positions</h2><span class="c" id="pc"></span></div>
+  <div id="pos"><div class="empty">Loading&hellip;</div></div>
+</section>
+
+<section class="panel">
+  <div class="ph"><h2>Copied Trades</h2><span class="c" id="tc"></span></div>
+  <div id="tr"><div class="empty">Loading&hellip;</div></div>
+</section>
+
+<div class="foot">
+  <span>Signing validated byte-for-byte against py-clob-client-v2</span>
+  <span id="clock">&mdash;</span>
+</div>
 </div>
 <script>
-const $=s=>document.querySelector(s),money=n=>(n<0?'-$':'$')+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}),num=n=>Number(n||0),cls=n=>num(n)>0?'pos':num(n)<0?'neg':'';
-function badge(s){return (s||'').toUpperCase()==='SELL'?'<span class="badge sell">SELL</span>':'<span class="badge buy">BUY</span>';}
-function tshort(t){if(!t)return'—';let d=new Date((t+'').replace(' ','T'));return isNaN(d)?t:d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
+const $=s=>document.querySelector(s),
+num=n=>Number(n||0),
+cls=n=>num(n)>0?'pos':num(n)<0?'neg':'',
+money=n=>(n<0?'-$':'$')+Math.abs(num(n)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}),
+sign=n=>(num(n)>0?'+':'')+money(n);
+function badge(s){return (s||'').toUpperCase()==='SELL'
+ ?'<span class="badge sell">SELL</span>':'<span class="badge buy">BUY</span>';}
+function tshort(t){if(!t)return'&mdash;';let d=new Date((t+'').replace(' ','T'));
+ return isNaN(d)?t:d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});}
+function hms(u){u=u|0;const h=u/3600|0,m=(u%3600)/60|0;return h?h+'h '+m+'m':m+'m';}
+function esc(s){return (s==null?'':''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
 async function tick(){
- let s;try{s=await (await fetch('/api/state',{cache:'no-store'})).json();}catch(e){return;}
- $('#target').textContent='Target '+(s.target||'—');$('#mode').textContent=s.mode+' mode';$('#src').textContent=s.data_source;
- $('#dry').textContent=s.dry_run?'DRY-RUN':'LIVE';let u=s.uptime_secs|0;$('#up').textContent='up '+(u/3600|0)+'h '+((u%3600)/60|0)+'m';
- $('#kpis').innerHTML=[['Portfolio',money(s.portfolio_value),''],['Open P&L',money(s.open_pnl),cls(s.open_pnl)],['Open Positions',s.position_count,''],['Copied Markets',s.copied_markets,'']].map(k=>`<div class="kpi"><div class="l">${k[0]}</div><div class="v ${k[2]}">${k[1]}</div></div>`).join('');
+ let s;try{s=await (await fetch('/api/state',{cache:'no-store'})).json();}
+ catch(e){$('#led').className='led idle';return;}
+ $('#led').className='led';
+ $('#target').textContent=s.target||'—';
+ $('#mode').textContent=s.mode||'—';
+ $('#src').textContent=(s.data_source||'—').toUpperCase();
+ const d=$('#dry');d.textContent=s.dry_run?'DRY-RUN':'LIVE';d.className=s.dry_run?'warn':'on';
+ $('#up').textContent=hms(s.uptime_secs);
+ const pnl=num(s.open_pnl),inv=num(s.portfolio_value)-pnl;
+ $('#kpis').innerHTML=[
+  ['Portfolio Value',money(s.portfolio_value),'',inv>0?'cost basis '+money(inv):'','acc'],
+  ['Unrealised P&amp;L',sign(pnl),cls(pnl),inv>0?(pnl/inv*100).toFixed(2)+'% return':'',''],
+  ['Open Positions',s.position_count,'','across live markets',''],
+  ['Markets Copied',s.copied_markets,'','since start','']
+ ].map(k=>`<div class="kpi ${k[4]}"><div class="l">${k[0]}</div><div class="v ${k[2]}">${k[1]}</div><div class="sub">${k[3]}</div></div>`).join('');
+
  $('#pc').textContent=s.positions.length?s.positions.length+' open':'';
- $('#pos').innerHTML=s.positions.length?`<table><thead><tr><th>Market</th><th>Outcome</th><th class="right">Shares</th><th class="right">Avg</th><th class="right">Now</th><th class="right">Value</th><th class="right">P&L</th></tr></thead><tbody>${s.positions.map(p=>`<tr><td>${p.title||'—'}</td><td class="mut">${p.outcome||''}</td><td class="right">${num(p.size).toFixed(2)}</td><td class="right mut">${num(p.avg_price).toFixed(3)}</td><td class="right">${num(p.cur_price).toFixed(3)}</td><td class="right">${money(p.value)}</td><td class="right ${cls(p.pnl)}">${money(p.pnl)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No open positions.</div>';
- $('#tc').textContent=s.trades.length?s.trades.length+' shown':'';
- $('#tr').innerHTML=s.trades.length?`<table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th class="right">Shares</th><th class="right">Price</th><th>Status</th></tr></thead><tbody>${s.trades.map(t=>`<tr><td class="mut">${tshort(t.time)}</td><td>${t.title||t.market||'—'}</td><td>${badge(t.side)}</td><td class="right">${num(t.size).toFixed(2)}</td><td class="right mut">${num(t.price).toFixed(3)}</td><td class="mut">${t.status}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No copy trades yet.</div>';
+ $('#pos').innerHTML=s.positions.length?
+  `<table><thead><tr><th>Market</th><th>Outcome</th><th class="r">Shares</th><th class="r">Avg</th>
+  <th class="r">Mark</th><th class="r">Value</th><th class="r">P&amp;L</th></tr></thead><tbody>`+
+  s.positions.map(p=>`<tr><td class="mkt">${esc(p.title)||'—'}</td>
+  <td><span class="oc">${esc(p.outcome)}</span></td>
+  <td class="r num">${num(p.size).toFixed(2)}</td>
+  <td class="r num mut">${num(p.avg_price).toFixed(3)}</td>
+  <td class="r num">${num(p.cur_price).toFixed(3)}</td>
+  <td class="r num">${money(p.value)}</td>
+  <td class="r num ${cls(p.pnl)}">${sign(p.pnl)}</td></tr>`).join('')+
+  '</tbody></table>':'<div class="empty">No open positions.</div>';
+
+ $('#tc').textContent=s.trades.length?s.trades.length+' recent':'';
+ $('#tr').innerHTML=s.trades.length?
+  `<table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th class="r">Shares</th>
+  <th class="r">Price</th><th>Status</th></tr></thead><tbody>`+
+  s.trades.map(t=>`<tr><td class="num mut">${tshort(t.time)}</td>
+  <td class="mkt">${esc(t.title||t.market)||'—'}</td><td>${badge(t.side)}</td>
+  <td class="r num">${num(t.size).toFixed(2)}</td>
+  <td class="r num mut">${num(t.price).toFixed(3)}</td>
+  <td class="st">${esc(t.status)}</td></tr>`).join('')+
+  '</tbody></table>':'<div class="empty">No copied trades yet.</div>';
+ $('#clock').textContent=new Date().toLocaleTimeString(undefined,{hour12:false})+' local';
 }
-tick();setInterval(tick,5000);
-function ostat(s){return s?`<span class="ostat s-${s}">${s}</span>`:'';}
+function ostat(s){return s?`<span class="ostat s-${esc(s)}">${esc(s)}</span>`:'';}
 async function scanTick(){
  let s;try{s=await (await fetch('/api/scanner',{cache:'no-store'})).json();}catch(e){return;}
  if(!s||!s.enabled){$('#scanSec').style.display='none';return;}
- $('#scanSec').style.display='';$('#scanc').textContent=(s.cards.length||0)+' live';
+ $('#scanSec').style.display='';
+ $('#scanc').textContent=(s.cards.length||0)+' live';
  const trig=num(s.trigger)||0.99;
- const row=(side,ask,st)=>{const tr=ask>=trig&&ask<1;return `<div class="row"><span class="side">${side}</span><div class="bar"><i style="width:${Math.min(100,Math.max(0,ask*100))}%"></i></div><span class="ask ${tr?'t':''}">${num(ask).toFixed(3)}</span>${ostat(st)}</div>`;};
- $('#cards').innerHTML=s.cards.length? s.cards.map(c=>{
+ const row=(side,ask,st)=>{const t=ask>=trig&&ask<1;
+  return `<div class="row"><span class="side">${side}</span>
+  <div class="bar"><i class="${t?'t':''}" style="width:${Math.min(100,Math.max(0,ask*100))}%"></i></div>
+  <span class="ask ${t?'t':''}">${num(ask).toFixed(3)}</span>${ostat(st)}</div>`;};
+ $('#cards').innerHTML=s.cards.length?s.cards.map(c=>{
    const u=num(c.up_ask),d=num(c.down_ask);
    const hot=c.valid&&((u>=trig&&u<1)||(d>=trig&&d<1));
-   const t=c.end_ts?new Date(c.end_ts*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'';
-   const cls=hot?'card hot':(c.valid?'card':'card bad');
-   return `<div class="${cls}"><div class="ch"><span class="coin">${c.coin}</span><span class="win">${t}${c.valid?'':' ⚠ bad book'}</span></div>${row('UP',u,c.up_status)}${row('DOWN',d,c.down_status)}</div>`;
- }).join(''):'<div class="empty">No live 5-min markets right now.</div>';
+   const t=c.end_ts?new Date(c.end_ts*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',hour12:false}):'';
+   return `<div class="${hot?'card hot':(c.valid?'card':'card bad')}">
+   <div class="ch"><span class="coin">${esc(c.coin)}</span>
+   <span class="win">${t}${c.valid?'':' BAD BOOK'}</span></div>
+   ${row('UP',u,c.up_status)}${row('DOWN',d,c.down_status)}</div>`;
+ }).join(''):'<div class="empty">No live markets in this window.</div>';
 }
+tick();setInterval(tick,5000);
 scanTick();setInterval(scanTick,1500);
 </script></body></html>"#;
