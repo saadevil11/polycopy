@@ -360,14 +360,17 @@ async function tick(){
  catch(e){$('#led').className='led idle';return;}
  $('#led').className='led';
  const selfd=/scanner/i.test(s.mode||'')||!s.target;
+ // Truncate the address the way wallets/explorers do: readable, and safe to leave
+ // on screen while screen-sharing or screenshotting. Full value on hover.
+ const short=a=>a&&a.length>14?a.slice(0,6)+'…'+a.slice(-4):a;
  $('#tgtline').innerHTML=selfd?'Self-driven &middot; <span>no target trader</span>'
-   :'Copying <span>'+esc(s.target)+'</span>';
+   :'Copying <span title="'+esc(s.target)+'">'+esc(short(s.target))+'</span>';
  $('#trh').textContent=selfd?'Executed Trades':'Copied Trades';
  $('#mode').textContent=s.mode||'—';
  $('#src').textContent=(s.data_source||'—').toUpperCase();
  const d=$('#dry');d.textContent=s.dry_run?'DRY-RUN':'LIVE';d.className=s.dry_run?'warn':'on';
  $('#up').textContent=hms(s.uptime_secs);
- const pnl=num(s.open_pnl),inv=num(s.cost_basis);
+ const pnl=num(s.open_pnl),inv=num(s.portfolio_value)-pnl;
  $('#kpis').innerHTML=[
   ['Portfolio Value',money(s.portfolio_value),'',inv>0?'cost basis '+money(inv):'','acc'],
   ['Unrealised P&amp;L',sign(pnl),cls(pnl),inv>0?(pnl/inv*100).toFixed(2)+'% return':'',''],
