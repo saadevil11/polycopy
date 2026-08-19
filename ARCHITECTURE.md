@@ -261,7 +261,7 @@ on PATH — no Visual Studio. Deps are pure-Rust (native-tls, k256) so GNU links
 self-contained. On Linux (AWS) the standard GNU toolchain works with no MinGW.
 
 ```powershell
-cd F:\others\githubrepo\polybotshadow-1
+cd /path/to/polybotshadow
 # Windows build needs the mingw64 bin on PATH for dlltool:
 $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
 cargo build --release
