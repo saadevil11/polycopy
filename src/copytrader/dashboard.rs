@@ -350,7 +350,13 @@ money=n=>(n<0?'-$':'$')+Math.abs(num(n)).toLocaleString(undefined,{minimumFracti
 sign=n=>(num(n)>0?'+':'')+money(n);
 function badge(s){return (s||'').toUpperCase()==='SELL'
  ?'<span class="badge sell">SELL</span>':'<span class="badge buy">BUY</span>';}
-function tshort(t){if(!t)return'&mdash;';let d=new Date((t+'').replace(' ','T'));
+function tshort(t){if(!t)return'&mdash;';
+ // The bot records trade times as UTC with no zone marker ("YYYY-MM-DD HH:MM:SS").
+ // JS would read a bare date-time as LOCAL, showing every fill off by the host's
+ // UTC offset, so tag it explicitly before parsing and render in the viewer's zone.
+ let s=(t+'').trim().replace(' ','T');
+ if(!/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) s+='Z';
+ let d=new Date(s);
  return isNaN(d)?t:d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});}
 function hms(u){u=u|0;const h=u/3600|0,m=(u%3600)/60|0;return h?h+'h '+m+'m':m+'m';}
 function esc(s){return (s==null?'':''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
